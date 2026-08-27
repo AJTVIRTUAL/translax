@@ -2282,6 +2282,31 @@ MPS » notée en §5 tricies tres est retirée de la liste des limites
 connues (corrigée par ce qui précède), la limite « mise à jour intégrée
 Windows uniquement » reste, elle, non résolue -- chantier distinct.
 
+## 5 tricies quinque. Nom d'éditeur harmonisé : AJTWS -> AJTVIRTUAL (ajouté le 27/08/2026)
+
+L'utilisateur a modifié directement la carte « À propos » (page
+Paramètres, commit `9827c73`, hors de cette conversation) : l'éditeur
+affiché passe de « AJTWS — Amilcar Joao » (voir §5 duodevicies pour
+l'écran de démarrage d'origine, et le paragraphe sur la carte « À propos »
+plus haut dans ce document -- descriptions historiques du nom d'alors,
+non réécrites) à « AJTVIRTUAL — AMILCAR JOAO ». Repéré en écrivant les
+tests de la fonctionnalité GPU/MPS ci-dessus (§5 tricies quater) : le
+test attendait encore l'ancien nom, révélant que le changement n'avait
+été fait que sur cette seule carte -- décision de l'utilisateur, pas la
+mienne, donc propagation demandée explicitement plutôt que devinée :
+harmoniser partout, avec la casse exacte déjà choisie (« AMILCAR JOAO »
+en capitales, comme sur la carte d'origine).
+
+Propagé aux deux autres endroits qui affichaient encore l'ancien nom :
+- `main.py` (`PUBLISHER`, écran de démarrage) ;
+- `installer/translax.iss` (`MyAppPublisher`, propriétés du fichier
+  installeur Windows -- tiret simple, pas de tiret cadratin, cohérent
+  avec la syntaxe Inno Setup déjà en place avant ce changement).
+
+`tests/test_ui.py` mis à jour pour vérifier « AJTVIRTUAL » (l'ancien
+check cherchait « AJTWS », resté au nom précédent). Rien de plus à
+construire ni tester : un changement de texte, sans logique derrière.
+
 ## 6. Interface
 
 ```

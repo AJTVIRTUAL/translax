@@ -1217,9 +1217,8 @@ def main() -> int:
         check("la carte « À propos » affiche le numéro de version réel",
               version_mod.VERSION in about_text, f"({about_text!r})")
         # "AJTVIRTUAL" depuis le 27/08/2026 (changement d'éditeur fait
-        # directement par l'utilisateur, commit 9827c73) -- "AJTWS" reste
-        # le nom encore utilisé ailleurs (splash `main.py`, installeur),
-        # incohérence signalée mais pas résolue unilatéralement ici.
+        # directement par l'utilisateur, commit 9827c73, puis propagé à
+        # main.py/installer/translax.iss -- voir SPEC.md §5 tricies quinque).
         check("la carte « À propos » mentionne l'éditeur", "AJTVIRTUAL" in about_text)
 
         # Bouton « Gérer les clés API » : doit ouvrir le même ApiKeysDialog

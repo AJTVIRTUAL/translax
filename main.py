@@ -21,7 +21,7 @@ from ui.main_window import MainWindow  # noqa: E402
 
 # Éditeur affiché sur l'écran de démarrage (demande explicite de
 # l'utilisateur, 25/08/2026) -- pas ailleurs dans l'appli pour l'instant.
-PUBLISHER = "AJTWS — Amilcar Joao"
+PUBLISHER = "AJTVIRTUAL — AMILCAR JOAO"
 
 
 def resource_path(relative: str) -> Path:

@@ -35,7 +35,7 @@
 #endif
 
 #define MyAppName "TRANSLAX"
-#define MyAppPublisher "AJTWS - Amilcar Joao"
+#define MyAppPublisher "AJTVIRTUAL - AMILCAR JOAO"
 #define MyAppExeName "TRANSLAX.exe"
 
 [Setup]
