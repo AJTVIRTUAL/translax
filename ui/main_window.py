@@ -819,14 +819,18 @@ class MainWindow(QWidget):
         ne doit rien lancer tout seul).
         """
         info = system_info.detect()
+        # "CUDA" ou "Metal/MPS" selon le backend réellement détecté (voir
+        # core/system_info.py) -- jamais "CUDA" par défaut : CUDA n'existe
+        # que sur du matériel NVIDIA, jamais sur Mac quelle que soit la puce.
+        backend_label = {"cuda": "CUDA", "mps": "Metal/MPS"}.get(info.gpu_backend, "CUDA/MPS")
         gpu_line = (
-            f"GPU détecté : {info.gpu_name} (utilisable par PyTorch/CUDA)" if info.gpu_available
-            else "GPU détecté : aucun utilisable par PyTorch/CUDA"
+            f"GPU détecté : {info.gpu_name} (utilisable par PyTorch/{backend_label})" if info.gpu_available
+            else "GPU détecté : aucun utilisable par PyTorch (ni CUDA ni Metal/MPS)"
         )
         device_line = (
-            "→ Précis, OPUS-MT et MADLAD-400 utiliseront ce GPU automatiquement."
+            f"→ Précis, OPUS-MT et MADLAD-400 utiliseront ce GPU automatiquement ({backend_label})."
             if info.gpu_available else
-            "→ Précis, OPUS-MT et MADLAD-400 tourneront sur le CPU (aucun GPU CUDA détecté)."
+            "→ Précis, OPUS-MT et MADLAD-400 tourneront sur le CPU (aucun GPU CUDA/MPS détecté)."
         )
         turbo_note = "→ Turbo (CTranslate2) tourne TOUJOURS sur le CPU, même si un GPU est détecté ci-dessus."
         lines = [
@@ -1138,7 +1142,7 @@ class MainWindow(QWidget):
             ),
         )
         about_text = _wrapped_label(
-            f"{version.version_string()}\nÉditeur :  AJTWS — Amilcar Joao"
+            f"{version.version_string()}\nÉditeur :  AJTVIRTUAL — AMILCAR JOAO"
         )
         about_text.setObjectName("outputPreview")
         self.about_text_label = about_text
