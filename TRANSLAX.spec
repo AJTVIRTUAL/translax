@@ -1,6 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
+
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
+
+# Rendu multiplateforme le 27/08/2026 (voir MACOS_BUILD.md) : ce fichier a
+# longtemps été écrit en pensant uniquement Windows -- `collect_data_files`/
+# `copy_metadata`/`collect_dynamic_libs` (les trois correctifs PaddleOCR
+# ci-dessous) s'adaptent déjà tout seuls à l'OS réel (ils inspectent ce qui
+# est VRAIMENT installé sur la machine qui construit, .dylib sur Mac au
+# lieu de .dll sur Windows par exemple) -- rien à changer pour eux. Seuls
+# l'icône (format différent selon l'OS) et l'emballage final en vrai
+# bundle `.app` (voir tout en bas) sont propres à macOS.
 
 # PaddleOCR local (voir SPEC.md §5 vicies) résout ses pipelines par chemin
 # de fichier relatif à l'intérieur du paquet `paddlex`
@@ -75,6 +86,11 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# .ico sur Windows, .icns sur macOS -- exigence de chaque OS pour l'icône
+# d'un exécutable/bundle, PyInstaller ne les accepte pas de façon
+# interchangeable (contrairement à ce qu'on pourrait supposer).
+_icon_file = 'ui/icon.icns' if sys.platform == 'darwin' else 'ui/icon.ico'
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -94,5 +110,27 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['ui/icon.ico'],
+    icon=[_icon_file],
 )
+
+if sys.platform == 'darwin':
+    # Sans ce bloc, `pyinstaller TRANSLAX.spec` sur Mac ne produirait
+    # qu'un exécutable Unix nu (dist/TRANSLAX), pas un vrai bundle `.app`
+    # -- contrairement au raccourci `pyinstaller --onefile --windowed`
+    # (utilisé par l'ancienne version de ce guide), qui ajoute cet
+    # emballage tout seul ; un .spec écrit à la main doit le faire
+    # explicitement. `BUNDLE` enveloppe directement l'EXE onefile
+    # ci-dessus -- pas de changement de mode (toujours un seul exécutable
+    # à l'intérieur), juste l'habillage `.app` (Info.plist, icône Dock).
+    #
+    # NON TESTÉ sur un vrai Mac au moment d'écrire ce bloc (voir
+    # MACOS_BUILD.md) -- honnêteté à jour avec le reste de ce fichier :
+    # si cette étape échoue, le message d'erreur exact est ce qu'il faut
+    # pour corriger.
+    app = BUNDLE(
+        exe,
+        name='TRANSLAX.app',
+        icon=_icon_file,
+        bundle_identifier='com.ajtws.translax',
+        info_plist={'NSHighResolutionCapable': True},
+    )

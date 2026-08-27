@@ -2149,6 +2149,63 @@ modal distinct et correctement titré ; `InfoDialog` testé directement
 (texte réellement affiché, bouton « Fermer » qui accepte réellement le
 modal) -- pas seulement que la connexion clic → modal existe.
 
+## 5 tricies tres. Préparation macOS : spec multiplateforme, guide reconstruit à jour (ajouté le 27/08/2026)
+
+L'utilisateur est prêt à s'attaquer réellement à la version Mac (MacBook
+Pro Apple Silicon) -- travail préparé depuis Windows (impossible de
+construire ou tester sur macOS depuis cette session, PyInstaller ne fait
+pas de compilation croisée), en vue d'une session Claude Code distincte
+tournant réellement sur ce Mac.
+
+**`TRANSLAX.spec` rendu multiplateforme**, sans rien changer au
+comportement Windows (vérifié réellement : reconstruction + lancement de
+l'exe après modification, identique à avant) :
+- Icône conditionnelle (`ui/icon.icns` sur macOS, `ui/icon.ico` sur
+  Windows -- exigence propre à chaque OS, PyInstaller ne les accepte pas
+  de façon interchangeable).
+- Bloc `BUNDLE(...)` ajouté, actif UNIQUEMENT si `sys.platform == "darwin"`
+  -- sans lui, `pyinstaller TRANSLAX.spec` sur Mac ne produirait qu'un
+  exécutable Unix nu, pas un vrai bundle `.app` (contrairement au
+  raccourci `pyinstaller --onefile --windowed` utilisé par l'ancienne
+  version de ce guide, qui ajoute cet emballage tout seul -- un `.spec`
+  écrit à la main doit le faire explicitement). Enveloppe l'EXE onefile
+  existant sans changer de mode d'empaquetage.
+- Les trois correctifs de packaging PaddleOCR (§5 vicies, vicies sexies,
+  vicies septies) restent inchangés et s'appliquent tels quels : basés
+  sur des utilitaires PyInstaller (`collect_data_files`/`copy_metadata`/
+  `collect_dynamic_libs`) qui inspectent ce qui est RÉELLEMENT installé
+  sur la machine de construction, pas figés sur des noms de fichiers
+  Windows.
+- **Non testé sur un vrai Mac** au moment d'écrire ce correctif (honnêteté
+  explicite dans les commentaires du fichier) -- en particulier le bloc
+  `BUNDLE`, seule vraie inconnue de cette modification.
+
+**Vérification réelle de compatibilité Apple Silicon des dépendances
+compilées**, avant d'écrire quoi que ce soit dans le guide (pas une
+supposition) : liste des fichiers RÉELLEMENT publiés sur PyPI pour les
+versions EXACTES pinées dans `requirements.txt`, une par une --
+`paddlepaddle==3.3.1` (wheel arm64 Python 3.13 confirmé),
+`paddleocr==3.7.0` (pur Python, aucune question de plateforme),
+`ctranslate2==4.8.1` (wheel arm64 confirmé), `opencv-contrib-python==4.10.0.84`
+et `pymupdf==1.28.2` (ABI stable, couvrent 3.13). Résultat : aucune de ces
+dépendances ne devrait avoir besoin d'être compilée localement sur ce
+Mac -- une inconnue réelle et documentée en moins avant même de démarrer.
+
+**`MACOS_BUILD.md` entièrement reconstruit** (l'ancienne version datait
+de la 1.6.0, un an de fonctionnalités en retard) : Git remplace la copie
+manuelle du dossier (le projet a maintenant un vrai dépôt, voir §5
+tricies unus) ; `TRANSLAX.spec` remplace la commande `pyinstaller`
+brute ; liste à jour de tout ce qu'il y a de nouveau à construire et
+tester (PaddleOCR, export PDF, hub/Paramètres/Outils, Pause/Stop, liste
+de reprise, boutons ⓘ) ; tableau de compatibilité des dépendances
+compilées ; et deux limites explicitement documentées comme NON corrigées
+ici volontairement -- la mise à jour intégrée ne cherche aujourd'hui
+qu'un installeur Windows (rien d'automatique côté Mac pour l'instant), et
+le diagnostic matériel de la page Paramètres ne détecte que CUDA, jamais
+MPS (l'accélération GPU propre à Apple Silicon) -- affichera donc « aucun
+GPU détecté » même si la puce en a un utilisable par PyTorch autrement,
+une vraie limite à corriger plus tard, pas une erreur de ce guide.
+
 ## 6. Interface
 
 ```
