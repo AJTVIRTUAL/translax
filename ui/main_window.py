@@ -224,18 +224,82 @@ class NoScrollComboBox(QComboBox):
         event.ignore()
 
 
-class Card(QFrame):
-    """Bloc visuel avec un titre, pour découper l'écran en sections."""
+class InfoDialog(QDialog):
+    """
+    Modal minimaliste pour une explication complète -- demande explicite
+    de l'utilisateur, 27/08/2026 : « tout ce qui est trop texte
+    explicatif... accessible en cliquant sur un bouton i (info) », pour
+    que l'écran principal reste épuré au lieu d'afficher ces paragraphes
+    en permanence.
+    """
 
-    def __init__(self, title: str):
+    def __init__(self, title: str, text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(440, 260)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addStretch(1)
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        close_btn = QPushButton("Fermer")
+        close_btn.setObjectName("primary")
+        close_btn.clicked.connect(self.accept)
+        button_row.addWidget(close_btn)
+        layout.addLayout(button_row)
+
+
+def _info_button(title: str, text: str) -> QPushButton:
+    """
+    Petit bouton « ⓘ » qui ouvre `InfoDialog(title, text)` -- demande
+    explicite de l'utilisateur, 27/08/2026, pour garder l'écran principal
+    épuré plutôt que d'y afficher le texte en permanence.
+
+    `button.window()`, résolu au moment du CLIC (pas à la construction) :
+    au moment où ce bouton est créé (souvent dans `Card.__init__`, avant
+    d'être ajouté à la vraie fenêtre), il n'a pas encore de fenêtre
+    parente -- au moment du clic, il en a forcément une, ce qui centre
+    correctement le modal sans avoir à faire remonter `self` (MainWindow)
+    à travers chaque appel de `Card(...)`.
+    """
+    button = QPushButton("ⓘ")
+    button.setObjectName("infoButton")
+    button.setFixedSize(22, 22)
+    button.setToolTip("Plus d'informations")
+    button.setCursor(Qt.PointingHandCursor)
+    button.clicked.connect(lambda: InfoDialog(title, text, button.window()).exec())
+    return button
+
+
+class Card(QFrame):
+    """
+    Bloc visuel avec un titre, pour découper l'écran en sections.
+
+    `info`/`info_title` (demande explicite de l'utilisateur, 27/08/2026) :
+    si fourni, ajoute un petit bouton « ⓘ » à côté du titre qui ouvre
+    `InfoDialog` avec ce texte -- pour un visuel épuré, sans paragraphe
+    explicatif affiché en permanence. `info_title` par défaut au même
+    texte que le titre de la carte, sauf précisé autrement.
+    """
+
+    def __init__(self, title: str, info: str | None = None, info_title: str | None = None):
         super().__init__()
         self.setObjectName("card")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 14, 20, 16)
         layout.setSpacing(10)
+        header = QHBoxLayout()
+        header.setSpacing(8)
         heading = QLabel(title)
         heading.setObjectName("cardTitle")
-        layout.addWidget(heading)
+        header.addWidget(heading)
+        header.addStretch(1)
+        if info:
+            header.addWidget(_info_button(info_title or title, info))
+        layout.addLayout(header)
         self.body = QVBoxLayout()
         self.body.setSpacing(8)
         layout.addLayout(self.body)
@@ -1002,11 +1066,13 @@ class MainWindow(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
 
-        hw_card = Card("Matériel réellement détecté et utilisé")
-        hw_card.body.addWidget(_wrapped_label(
-            "Ce que TRANSLAX détecte sur cette machine, et ce qu'il utiliserait vraiment "
-            "pour traduire -- un indicateur réel, pas une estimation."
-        ))
+        hw_card = Card(
+            "Matériel réellement détecté et utilisé",
+            info=(
+                "Ce que TRANSLAX détecte sur cette machine, et ce qu'il utiliserait vraiment "
+                "pour traduire -- un indicateur réel, pas une estimation."
+            ),
+        )
         self.system_info_label = _wrapped_label(
             "Détection non lancée -- cliquez sur « Analyser » ci-dessous."
         )
@@ -1028,11 +1094,14 @@ class MainWindow(QWidget):
         # dépôt public) et _check_for_update/_install_update plus bas.
         # Jamais de vérification automatique au démarrage : uniquement au
         # clic explicite sur « Chercher une mise à jour ».
-        update_card = Card("Mises à jour")
-        update_card.body.addWidget(_wrapped_label(
-            f"Version installée : {version.VERSION}. Vérifie sur GitHub si une version plus "
-            "récente est disponible."
-        ))
+        update_card = Card(
+            "Mises à jour",
+            info=(
+                "Vérifie sur GitHub (dépôt public de TRANSLAX) si une version plus récente "
+                "est disponible, et propose de la télécharger et de l'installer automatiquement."
+            ),
+        )
+        update_card.body.addWidget(_wrapped_label(f"Version installée : {version.VERSION}."))
         self.update_status_label = _wrapped_label("Vérification non lancée.")
         self.update_status_label.setObjectName("outputPreview")
         update_card.body.addWidget(self.update_status_label)
@@ -1057,29 +1126,32 @@ class MainWindow(QWidget):
 
         root.addWidget(update_card)
 
-        about_card = Card("À propos de TRANSLAX")
-        about_card.body.addWidget(_wrapped_label(
-            "Ce que fait TRANSLAX, et pourquoi -- en bref."
-        ))
+        about_card = Card(
+            "À propos de TRANSLAX",
+            info_title="Pourquoi TRANSLAX",
+            info=(
+                "TRANSLAX traduit des documents volumineux (livres, PDF scannés...) "
+                "directement sur cette machine, sans dépendre d'un service de traduction "
+                "payant : plusieurs moteurs (NLLB, CTranslate2 « Turbo », OPUS-MT, "
+                "MADLAD-400) et un OCR local (PaddleOCR) pour le texte scanné, choisis "
+                "selon l'usage visé -- commercial ou strictement personnel."
+            ),
+        )
         about_text = _wrapped_label(
-            f"{version.version_string()}\n"
-            "Éditeur :  AJTWS — Amilcar Joao\n\n"
-            "TRANSLAX traduit des documents volumineux (livres, PDF scannés...) "
-            "directement sur cette machine, sans dépendre d'un service de traduction "
-            "payant : plusieurs moteurs (NLLB, CTranslate2 « Turbo », OPUS-MT, "
-            "MADLAD-400) et un OCR local (PaddleOCR) pour le texte scanné, choisis "
-            "selon l'usage visé -- commercial ou strictement personnel."
+            f"{version.version_string()}\nÉditeur :  AJTWS — Amilcar Joao"
         )
         about_text.setObjectName("outputPreview")
         self.about_text_label = about_text
         about_card.body.addWidget(about_text)
         root.addWidget(about_card)
 
-        api_card = Card("Clés API")
-        api_card.body.addWidget(_wrapped_label(
-            "Anthropic (Claude), xAI (Grok) et OpenAI (ChatGPT) -- stockées uniquement "
-            "sur cette machine, jamais transmises par TRANSLAX lui-même."
-        ))
+        api_card = Card(
+            "Clés API",
+            info=(
+                "Anthropic (Claude), xAI (Grok) et OpenAI (ChatGPT) -- stockées uniquement "
+                "sur cette machine, jamais transmises par TRANSLAX lui-même."
+            ),
+        )
         api_row = QHBoxLayout()
         api_row.addStretch()
         self.api_keys_settings_button = QPushButton("Gérer les clés API…")
@@ -1088,13 +1160,15 @@ class MainWindow(QWidget):
         api_card.body.addLayout(api_row)
         root.addWidget(api_card)
 
-        cache_card = Card("Fichiers temporaires et cache OCR")
-        cache_card.body.addWidget(_wrapped_label(
-            "TRANSLAX crée un petit dossier caché « .translax » à côté de chaque "
-            "fichier de sortie, pour reprendre une traduction interrompue sans tout "
-            "refaire -- y compris le texte déjà extrait par OCR (cache JSON). Une fois "
-            "une traduction terminée, ce dossier peut être supprimé sans danger."
-        ))
+        cache_card = Card(
+            "Fichiers temporaires et cache OCR",
+            info=(
+                "TRANSLAX crée un petit dossier caché « .translax » à côté de chaque "
+                "fichier de sortie, pour reprendre une traduction interrompue sans tout "
+                "refaire -- y compris le texte déjà extrait par OCR (cache JSON). Une fois "
+                "une traduction terminée, ce dossier peut être supprimé sans danger."
+            ),
+        )
         self.cache_status_label = _wrapped_label("Aucune analyse effectuée pour l'instant.")
         self.cache_status_label.setObjectName("outputPreview")
         cache_card.body.addWidget(self.cache_status_label)
@@ -1405,22 +1479,22 @@ class MainWindow(QWidget):
             "mais facture chaque page et nécessite une clé API personnelle. Grok et ChatGPT sont "
             "préparés pour une future intégration, pas encore utilisables."
         )
+        # Explication complète accessible via le bouton ⓘ plutôt qu'affichée
+        # en permanence (demande explicite de l'utilisateur, 27/08/2026 :
+        # écran principal épuré) -- remplace l'ancien paragraphe fixe.
         vision_row = QHBoxLayout()
         vision_row.setSpacing(10)
         vision_row.addWidget(self._field_label("Modèle OCR (Traduire X)"))
         vision_row.addWidget(self.vision_model_combo, 1)
-        settings.body.addLayout(vision_row)
-
-        api_note = QLabel(
+        vision_row.addWidget(_info_button(
+            "Modèle OCR (Traduire X)",
             "Traduire X utilise l'OCR local (PaddleOCR, gratuit, aucune clé requise) par défaut. "
             "La clé Anthropic ci-dessus ne sert que si « Claude » est choisi ci-dessus — crée la "
             "tienne sur console.anthropic.com si besoin. Traduire reste 100 % local et gratuit "
             "dans tous les cas. Cliquer sur le champ ci-dessus ouvre la fenêtre de saisie "
-            "(prépare aussi xAI/OpenAI pour de futures intégrations)."
-        )
-        api_note.setObjectName("outputPreview")
-        api_note.setWordWrap(True)
-        settings.body.addWidget(api_note)
+            "(prépare aussi xAI/OpenAI pour de futures intégrations).",
+        ))
+        settings.body.addLayout(vision_row)
 
         root.addWidget(settings)
 

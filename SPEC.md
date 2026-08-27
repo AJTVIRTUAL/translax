@@ -2098,6 +2098,57 @@ vérification automatique, nouvelle version trouvée/pas trouvée/erreur
 réseau, confirmation, téléchargement, lancement de l'installeur mocké,
 `QApplication.quit()` bien appelé).
 
+## 5 tricies duo. Boutons ⓘ (info) : écran épuré, explications à la demande (ajouté le 27/08/2026)
+
+Demande explicite de l'utilisateur : « dans le logiciel tout ce qui est
+trop texte explicatif [...] je veux que ces explications soient
+accessibles en cliquant sur un bouton i (info) qui ouvre un modal » --
+plusieurs cartes de la page Paramètres (et un bloc de la page Traduire)
+affichaient un paragraphe entier en permanence, alourdissant visuellement
+un écran pensé pour rester épuré.
+
+**`InfoDialog`** (`ui/main_window.py`) : modal minimaliste (texte +
+bouton « Fermer »). **`_info_button(titre, texte)`** : petit bouton
+« ⓘ » (`objectName="infoButton"`, carré comme le reste de l'interface --
+voir §5 septendecies) qui ouvre `InfoDialog(titre, texte, button.window())`
+au clic -- `button.window()` résolu au moment du CLIC, pas de la
+construction : au clic, le bouton fait forcément déjà partie de la vraie
+fenêtre, donc le modal se centre correctement sans avoir à faire remonter
+`self` (MainWindow) à travers chaque appel de `Card(...)`.
+
+**`Card`** accepte maintenant `info`/`info_title` optionnels : si fourni,
+ajoute automatiquement ce bouton à côté du titre de la carte -- un seul
+endroit à changer pour que toute nouvelle carte future en bénéficie sans
+y repenser.
+
+**Paragraphes déplacés dans un modal** (le texte reste identique, seul
+l'endroit où le lire change) :
+- Page Paramètres : cartes « Matériel réellement détecté et utilisé »,
+  « Mises à jour », « Clés API », « Fichiers temporaires et cache OCR ».
+- Carte « À propos de TRANSLAX » : renommée en interne (`info_title`)
+  « Pourquoi TRANSLAX » -- seuls le numéro de version et le nom de
+  l'éditeur restent visibles en permanence (des faits courts), le
+  paragraphe qui explique le POURQUOI de l'application part dans le
+  modal.
+- Page Traduire : le paragraphe fixe sous le sélecteur de modèle OCR
+  (Traduire X) devient un bouton ⓘ juste à côté du sélecteur, à l'endroit
+  où l'explication est la plus pertinente.
+
+**Non déplacé, volontairement** : les textes des DIALOGUES déjà
+ponctuels (ApiKeysDialog, VisionReviewDialog, ResumeJobsDialog...) --
+ceux-là ne contribuent pas à l'encombrement visuel des écrans
+PERMANENTS, puisqu'ils ne s'affichent que lorsqu'on les ouvre
+explicitement ; les indicateurs courts et fonctionnels (résultat d'une
+analyse, avertissement anti-veille pendant la traduction...) restent
+affichés tels quels -- ce ne sont pas des textes explicatifs mais de
+l'état réel, pas du texte à cacher.
+
+**Vérifié réellement** (`tests/test_ui.py` §19) : exactement 5 boutons ⓘ
+sur la page Paramètres et 1 sur la page Traduire, chacun ouvrant bien un
+modal distinct et correctement titré ; `InfoDialog` testé directement
+(texte réellement affiché, bouton « Fermer » qui accepte réellement le
+modal) -- pas seulement que la connexion clic → modal existe.
+
 ## 6. Interface
 
 ```

@@ -95,6 +95,16 @@ def main() -> int:
     print(f"Version : {VERSION}")
 
     print("\n=== 2. Construction de l'exe (PyInstaller) ===")
+    # Revérifié ici, pas seulement à l'étape 0 -- incident réel rencontré :
+    # TRANSLAX peut être relancé par l'utilisateur pendant le temps que
+    # prend le bump de version, ce qui fait échouer PyInstaller (fichier
+    # verrouillé) après coup, avec une version déjà incrémentée pour rien.
+    if _translax_is_running() and not args.dry_run:
+        raise SystemExit(
+            "ERREUR : TRANSLAX vient d'être relancé entre-temps -- ferme-le et relance ce "
+            f"script (la version {VERSION} est déjà écrite dans core/version.py, pas la peine "
+            "de rebumper : relance juste ce script normalement, il repartira du même numéro)."
+        )
     _run([sys.executable, "-m", "PyInstaller", "TRANSLAX.spec", "--noconfirm"], dry_run=args.dry_run)
 
     print("\n=== 3. Construction de l'installeur (Inno Setup) ===")

@@ -339,6 +339,25 @@ QPushButton#backButton:pressed {
     color: #4f8cff;
 }
 
+QPushButton#infoButton {
+    background-color: #1a1f2a;
+    border: 1px solid #2b3444;
+    border-radius: 0px;
+    color: #8b96a8;
+    font-weight: 700;
+    font-size: 12px;
+    padding: 0px;
+}
+
+QPushButton#infoButton:hover {
+    color: #dbe2ee;
+    border-color: #4f8cff;
+}
+
+QPushButton#infoButton:pressed {
+    color: #4f8cff;
+}
+
 /* --- Progression ------------------------------------------------------ */
 
 QProgressBar {

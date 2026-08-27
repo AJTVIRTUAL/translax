@@ -31,7 +31,7 @@ import anthropic  # noqa: E402
 import pymupdf  # noqa: E402
 from PySide6.QtCore import QEventLoop, QPoint, QPointF, QTimer, Qt  # noqa: E402
 from PySide6.QtGui import QWheelEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushButton  # noqa: E402
 
 from core import heartbeat as heartbeat_mod  # noqa: E402
 from core import pipeline, segment, settings, state as state_mod, system_info, updater, vision_ocr  # noqa: E402
@@ -43,6 +43,7 @@ from ui.main_window import (  # noqa: E402
     PAGE_TOOLS,
     PAGE_TRANSLATE,
     ApiKeysDialog,
+    InfoDialog,
     MainWindow,
     NoScrollComboBox,
     ResumeJobsDialog,
@@ -1450,6 +1451,54 @@ def main() -> int:
             updater.download_installer = real_download
             updater.launch_installer_and_quit = real_launch
             QApplication.quit = real_app_quit
+
+        window._navigate_to(PAGE_HUB)
+        flush_page_animation(window, PAGE_HUB)
+
+        print("\n19. Boutons info : écran épuré, explications à la demande (demande explicite de l'utilisateur)")
+        window._navigate_to(PAGE_SETTINGS)
+        flush_page_animation(window, PAGE_SETTINGS)
+        settings_page_widget = window.pages.currentWidget().widget()
+        settings_info_buttons = [
+            b for b in settings_page_widget.findChildren(QPushButton) if b.objectName() == "infoButton"
+        ]
+        check("chaque carte à texte explicatif a bien son bouton info "
+              "(Matériel, Mises à jour, À propos, Clés API, Cache)",
+              len(settings_info_buttons) == 5, f"({len(settings_info_buttons)})")
+
+        real_dialog_exec = InfoDialog.exec
+        opened_titles: list[str] = []
+        InfoDialog.exec = lambda self: opened_titles.append(self.windowTitle()) or 0
+        try:
+            for b in settings_info_buttons:
+                b.click()
+        finally:
+            InfoDialog.exec = real_dialog_exec
+        check("chaque bouton ouvre bien un InfoDialog distinct, avec un titre",
+              len(opened_titles) == 5 and all(opened_titles), f"({opened_titles!r})")
+
+        window._navigate_to(PAGE_TRANSLATE)
+        flush_page_animation(window, PAGE_TRANSLATE)
+        translate_page_widget = window.pages.currentWidget().widget()
+        translate_info_buttons = [
+            b for b in translate_page_widget.findChildren(QPushButton) if b.objectName() == "infoButton"
+        ]
+        check("la page Traduire a bien un bouton info pour le modèle OCR (remplace l'ancien paragraphe fixe)",
+              len(translate_info_buttons) == 1, f"({len(translate_info_buttons)})")
+
+        # InfoDialog testé directement (ni mocké, ni via .exec() bloquant) :
+        # construit pour de vrai, texte réellement affiché, et le bouton
+        # « Fermer » accepte réellement le dialogue.
+        real_dialog = InfoDialog("Titre de test", "Texte explicatif de test.")
+        check("le titre demandé est bien celui du modal", real_dialog.windowTitle() == "Titre de test")
+        labels_in_dialog = [lbl.text() for lbl in real_dialog.findChildren(QLabel)]
+        check("le texte explicatif est bien affiché dans le modal",
+              "Texte explicatif de test." in labels_in_dialog, f"({labels_in_dialog!r})")
+        close_buttons = [b for b in real_dialog.findChildren(QPushButton) if b.text() == "Fermer"]
+        check("le bouton « Fermer » existe", len(close_buttons) == 1)
+        if close_buttons:
+            close_buttons[0].click()
+            check("cliquer « Fermer » accepte bien le modal", real_dialog.result() == QDialog.Accepted)
 
         window._navigate_to(PAGE_HUB)
         flush_page_animation(window, PAGE_HUB)
