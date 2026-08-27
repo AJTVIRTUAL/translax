@@ -19,6 +19,16 @@
 ; personnalisées pour un premier jet simple) : Bienvenue -> Dossier de
 ; destination -> Icône sur le Bureau (case à cocher) -> Prêt à installer
 ; -> Installation -> Fin (avec case "lancer maintenant").
+;
+; Sert AUSSI à la mise à jour depuis l'appli elle-même (demande explicite
+; de l'utilisateur, 27/08/2026 : "comme sur VS Code" -- voir
+; core/updater.py::launch_installer_and_quit) : lancé avec /SILENT
+; /CLOSEAPPLICATIONS /NOCANCEL, sans assistant visible ni interaction. La
+; case "lancer maintenant" de la page de fin ([Run], plus bas) fonctionne
+; alors AUTOMATIQUEMENT sans confirmation (voir le commentaire à cet
+; endroit précis pour pourquoi) : TRANSLAX se relance tout seul une fois
+; l'installation terminée, exactement le "on clique et tout le reste se
+; lance" demandé.
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
@@ -45,6 +55,13 @@ OutputDir=..\dist_installer
 OutputBaseFilename=TRANSLAX-Setup-{#MyAppVersion}
 SetupIconFile=..\ui\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; Personnalisation visuelle (demande explicite de l'utilisateur,
+; 27/08/2026 : "styliser... au maximum... pour se sentir immergé dans
+; l'application") -- générées par scripts/build_installer_images.py à
+; partir du logo et de la palette réels de TRANSLAX (voir ui/styles.qss),
+; pas les images grises par défaut d'Inno Setup.
+WizardImageFile=wizard_image.bmp
+WizardSmallImageFile=wizard_small_image.bmp
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -54,6 +71,15 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; effet ici, mais réglé explicitement pour ne jamais surprendre si les
 ; modèles embarqués grossissent encore.
 DiskSpanning=no
+; Détecte automatiquement (Gestionnaire de redémarrage de Windows) si
+; TRANSLAX tourne encore et verrouille le .exe à remplacer -- propose de
+; le fermer plutôt que d'échouer. Sécurité supplémentaire pour la mise à
+; jour depuis l'appli (voir plus haut) : dans ce cas précis, TRANSLAX se
+; ferme déjà lui-même AVANT de lancer cet installeur, donc ce mécanisme
+; ne devrait normalement jamais avoir à agir -- il reste utile si une
+; AUTRE instance de TRANSLAX tournait en parallèle.
+CloseApplications=yes
+RestartApplications=yes
 
 [Languages]
 Name: "french"; MessagesFile: "compiler:Languages\French.isl"
@@ -71,4 +97,12 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+; PAS de "skipifsilent" (volontaire) : en installation interactive
+; normale, "postinstall" affiche la case "Lancer TRANSLAX maintenant" sur
+; la page de fin, cochée par défaut -- comportement inchangé. En mode
+; silencieux (/SILENT, utilisé par la mise à jour depuis l'appli, voir
+; core/updater.py), l'absence de "skipifsilent" fait que cette entrée
+; s'exécute quand même automatiquement, sans personne pour cocher quoi
+; que ce soit -- exactement le "on clique et tout le reste se lance"
+; demandé, la même entrée servant les deux cas sans les dupliquer.
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall

@@ -34,7 +34,7 @@ from PySide6.QtGui import QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
 from core import heartbeat as heartbeat_mod  # noqa: E402
-from core import pipeline, segment, settings, state as state_mod, system_info, vision_ocr  # noqa: E402
+from core import pipeline, segment, settings, state as state_mod, system_info, updater, vision_ocr  # noqa: E402
 from core import version as version_mod  # noqa: E402
 import ui.main_window as main_window_mod  # noqa: E402
 from ui.main_window import (  # noqa: E402
@@ -179,6 +179,33 @@ def wait_for_thread(window: MainWindow) -> bool:
     timer.timeout.connect(on_timeout)
     timer.start(TIMEOUT_MS)
     window.thread.finished.connect(loop.quit)
+    loop.exec()
+    timer.stop()
+    return not timed_out["value"]
+
+
+def wait_for_named_thread(window: MainWindow, attr_name: str, timeout_ms: int = TIMEOUT_MS) -> bool:
+    """
+    Même principe que `wait_for_thread`, mais pour n'importe quel attribut
+    QThread de `window` (ex. `_update_check_thread`/`_update_download_thread`,
+    voir la section « Mises à jour ») -- ces threads-là sont distincts de
+    `window.thread` (une traduction en cours), qui n'a rien à voir ici.
+    """
+    thread = getattr(window, attr_name)
+    if thread is None:
+        return True
+    loop = QEventLoop()
+    timed_out = {"value": False}
+
+    def on_timeout():
+        timed_out["value"] = True
+        loop.quit()
+
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(on_timeout)
+    timer.start(timeout_ms)
+    thread.finished.connect(loop.quit)
     loop.exec()
     timer.stop()
     return not timed_out["value"]
@@ -1311,6 +1338,118 @@ def main() -> int:
               window.scan_default_cache_button.y() < window.pick_cache_folder_button.y()
               < window.clear_cache_button.y())
         window.hide()
+
+        window._navigate_to(PAGE_HUB)
+        flush_page_animation(window, PAGE_HUB)
+
+        print("\n18. Mises à jour (page Paramètres, demande explicite de l'utilisateur -- « comme sur VS Code »)")
+        window._navigate_to(PAGE_SETTINGS)
+        flush_page_animation(window, PAGE_SETTINGS)
+        check("aucune vérification lancée toute seule à l'arrivée sur la page",
+              "non lancée" in window.update_status_label.text().lower(),
+              f"({window.update_status_label.text()!r})")
+
+        real_check_latest = updater.check_latest_release
+        real_download = updater.download_installer
+        real_launch = updater.launch_installer_and_quit
+        real_app_quit = QApplication.quit
+
+        print("  18a. Nouvelle version trouvée -> bouton « Mettre à jour » apparaît")
+        fake_release = updater.ReleaseInfo(
+            version="99.0.0", download_url="https://example.invalid/fake.exe",
+            asset_size=123, notes="Notes de test.",
+        )
+        updater.check_latest_release = lambda: fake_release
+        try:
+            window.check_update_button.click()
+            check("thread de vérification terminé", wait_for_named_thread(window, "_update_check_thread"))
+            app.processEvents()
+            check("la nouvelle version (fictive) est bien signalée",
+                  "99.0.0" in window.update_status_label.text(), f"({window.update_status_label.text()!r})")
+            # `isVisibleTo(window)`, pas `isVisible()` : la fenêtre elle-même
+            # est cachée depuis la section 17 (`window.hide()`) -- `isVisible()`
+            # tiendrait compte de ça et renverrait toujours False, peu importe
+            # `setVisible(True)`. `isVisibleTo` ignore l'état du sommet et ne
+            # regarde que ce que CE widget voudrait être, ce qui est bien ce
+            # qu'on veut vérifier ici.
+            check("le bouton « Mettre à jour » apparaît", window.install_update_button.isVisibleTo(window))
+        finally:
+            updater.check_latest_release = real_check_latest
+
+        print("  18b. Déjà à jour -> pas de bouton « Mettre à jour »")
+        same_release = updater.ReleaseInfo(
+            version=version_mod.VERSION, download_url="https://example.invalid/fake.exe",
+            asset_size=1, notes="",
+        )
+        updater.check_latest_release = lambda: same_release
+        try:
+            window.check_update_button.click()
+            check("thread de vérification terminé", wait_for_named_thread(window, "_update_check_thread"))
+            app.processEvents()
+            check("« déjà la dernière version » affiché quand rien de plus récent",
+                  "déjà la dernière version" in window.update_status_label.text().lower(),
+                  f"({window.update_status_label.text()!r})")
+            check("le bouton « Mettre à jour » disparaît",
+                  not window.install_update_button.isVisibleTo(window))
+        finally:
+            updater.check_latest_release = real_check_latest
+
+        print("  18c. Échec réseau -> message lisible, jamais un plantage")
+        def fake_check_error():
+            raise updater.UpdateCheckError("panne réseau simulée")
+        updater.check_latest_release = fake_check_error
+        try:
+            window.check_update_button.click()
+            check("thread de vérification (échec) terminé", wait_for_named_thread(window, "_update_check_thread"))
+            app.processEvents()
+            check("l'échec de vérification est affiché lisiblement",
+                  "panne réseau simulée" in window.update_status_label.text())
+        finally:
+            updater.check_latest_release = real_check_latest
+
+        print("  18d. « Mettre à jour » : téléchargement puis lancement de l'installeur, TRANSLAX se ferme")
+        updater.check_latest_release = lambda: fake_release
+
+        def fake_download(url, dest_path, on_progress=None, should_stop=None):
+            dest_path.write_bytes(b"contenu factice")
+            if on_progress:
+                on_progress(10, 10)
+
+        updater.download_installer = fake_download
+        launch_calls = {"count": 0}
+        updater.launch_installer_and_quit = lambda path: launch_calls.__setitem__("count", launch_calls["count"] + 1)
+        quit_calls = {"count": 0}
+        QApplication.quit = lambda self=None: quit_calls.__setitem__("count", quit_calls["count"] + 1)
+
+        real_exec = QMessageBox.exec
+        real_clicked = QMessageBox.clickedButton
+        QMessageBox.exec = lambda self: None
+        QMessageBox.clickedButton = lambda self: next(b for b in self.buttons() if b.text() == "Mettre à jour")
+        try:
+            window.check_update_button.click()
+            check("thread de vérification (nouvelle version) terminé",
+                  wait_for_named_thread(window, "_update_check_thread"))
+            app.processEvents()
+            window.install_update_button.click()
+            check("thread de téléchargement terminé", wait_for_named_thread(window, "_update_download_thread"))
+            app.processEvents()
+            check("l'installeur (mocké) a bien été « lancé »", launch_calls["count"] == 1)
+
+            # QApplication.quit() est différé (QTimer.singleShot) pour
+            # laisser le message s'afficher -- on laisse la boucle
+            # d'évènements tourner assez longtemps pour l'observer.
+            delay_loop = QEventLoop()
+            QTimer.singleShot(1500, delay_loop.quit)
+            delay_loop.exec()
+            check("QApplication.quit() est bien appelé une fois l'installeur lancé",
+                  quit_calls["count"] >= 1)
+        finally:
+            QMessageBox.exec = real_exec
+            QMessageBox.clickedButton = real_clicked
+            updater.check_latest_release = real_check_latest
+            updater.download_installer = real_download
+            updater.launch_installer_and_quit = real_launch
+            QApplication.quit = real_app_quit
 
         window._navigate_to(PAGE_HUB)
         flush_page_animation(window, PAGE_HUB)

@@ -52,11 +52,13 @@ from __future__ import annotations
 
 import threading
 import traceback
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from core import heartbeat as heartbeat_mod
 from core import pipeline
+from core import updater
 
 
 class TranslationWorker(QObject):
@@ -155,3 +157,64 @@ class TranslationWorker(QObject):
             self.failed.emit(f"{type(exc).__name__} : {exc}")
         else:
             self.finished.emit(result)
+
+
+class UpdateCheckWorker(QObject):
+    """
+    Interroge GitHub pour la dernière version publiée (voir
+    core/updater.py), dans un thread séparé -- un appel réseau ne doit
+    jamais geler l'interface (demande explicite de l'utilisateur,
+    27/08/2026 : « chercher une mise à jour » dans les Paramètres).
+    """
+    finished = Signal(object)  # core.updater.ReleaseInfo
+    failed = Signal(str)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            info = updater.check_latest_release()
+        except updater.UpdateCheckError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001 - jamais une exception brute jusqu'à l'UI
+            traceback.print_exc()
+            self.failed.emit(f"{type(exc).__name__} : {exc}")
+        else:
+            self.finished.emit(info)
+
+
+class UpdateDownloadWorker(QObject):
+    """
+    Télécharge l'installeur d'une version choisie, dans un thread séparé
+    -- plusieurs centaines de Mo, une opération bien trop longue pour le
+    thread principal. `request_stop()` permet d'annuler proprement (voir
+    core/updater.py::download_installer, qui efface le fichier partiel).
+    """
+    progress = Signal(int, int)   # fait, total (total peut être 0)
+    finished = Signal(object)     # Path de l'installeur téléchargé
+    failed = Signal(str)
+
+    def __init__(self, release: "updater.ReleaseInfo", dest_path: Path):
+        super().__init__()
+        self._release = release
+        self._dest_path = dest_path
+        self._stop_requested = threading.Event()
+
+    def request_stop(self) -> None:
+        self._stop_requested.set()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            updater.download_installer(
+                self._release.download_url,
+                self._dest_path,
+                on_progress=self.progress.emit,
+                should_stop=self._stop_requested.is_set,
+            )
+        except updater.UpdateCheckError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            self.failed.emit(f"{type(exc).__name__} : {exc}")
+        else:
+            self.finished.emit(self._dest_path)

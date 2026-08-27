@@ -26,8 +26,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.version import VERSION  # noqa: E402
+import build_installer_images  # noqa: E402
 
 # Emplacements standards de l'installeur Inno Setup 6 sur Windows --
 # testés avant de retomber sur une recherche dans le PATH (utile si
@@ -59,6 +61,12 @@ def main() -> int:
             "(python -m PyInstaller TRANSLAX.spec) avant l'installeur."
         )
         return 1
+
+    # Régénérées à chaque build, pas seulement au premier jet -- coût
+    # négligeable (quelques dixièmes de seconde), et garantit que le logo
+    # de l'installeur ne se retrouve jamais périmé par rapport à
+    # ui/icon.ico si celui-ci change un jour.
+    build_installer_images.main()
 
     iscc = find_iscc()
     iss_script = ROOT / "installer" / "translax.iss"

@@ -1995,6 +1995,109 @@ automatisation de mise à jour (vérifier une nouvelle version, proposer de
 la télécharger) -- explicitement hors du périmètre "simple" demandé pour
 ce premier jet.
 
+## 5 tricies unus. Dépôt Git, mise à jour intégrée (comme VS Code), installeur personnalisé (ajouté le 27/08/2026)
+
+Trois demandes explicites de l'utilisateur en une fois : « un système de
+mise à jour bien rodé dès le départ afin que mes futures changements se
+fassent confortablement », un dépôt Git réel
+(`https://github.com/AJTVIRTUAL/translax.git` = ce dossier), une fonction
+« Chercher une mise à jour » dans les Paramètres câblée à ce dépôt,
+« comme sur VS Code » (un clic, tout le reste se lance), et la liberté de
+styliser l'installeur « au maximum » pour une sensation immersive.
+
+**Dépôt Git réel, pas une supposition** : `git init` + `.gitignore`
+(exclut `.venv/`, `dist/`, `build/`, `dist_installer/`) + remote `origin`
+vers le dépôt réel, confirmé accessible (`gh repo view`, compte
+`amilcarjoao` membre de l'organisation `AJTVIRTUAL`) avant tout push.
+**Incident réel évité de justesse** : `doc/claud_api_key`, un fichier de
+108 octets (taille compatible avec une vraie clé API) trouvé lors du
+premier `git add -A` -- retiré immédiatement de l'index et ajouté au
+`.gitignore` par son nom exact avant le tout premier commit, jamais
+poussé sur GitHub. Premier commit + push vers `main`, puis tag `v1.17.0`
+et première GitHub Release avec l'installeur joint (voir plus bas) --
+socle réel sur lequel la mise à jour intégrée s'appuie, pas une adresse
+théorique.
+
+**`core/updater.py`** -- vérifie/télécharge via les Releases GitHub du
+dépôt public (`GET /repos/AJTVIRTUAL/translax/releases/latest`, aucune
+authentification nécessaire, 60 requêtes/heure largement suffisantes pour
+un clic occasionnel) :
+- `check_latest_release()` : dernière version publiée + URL de
+  l'installeur joint + notes de version. Erreurs réseau/dépôt sans
+  publication -> `UpdateCheckError` avec un message déjà lisible, jamais
+  une exception brute remontée jusqu'à l'interface.
+- `is_newer(distant, local)` : comparaison segment par segment (`1.9.0`
+  correctement PAS plus récent que `1.17.0` malgré `"9" > "1"` en
+  comparaison de chaînes -- piège explicitement testé).
+- `download_installer(...)` : par blocs de 1 Mo, avec progression et
+  annulation (`should_stop`) ; écrit d'abord un fichier `.part`, renommé
+  seulement une fois complet -- jamais un `.exe` à moitié écrit qui
+  pourrait être lancé par erreur.
+- **`urllib.request` (bibliothèque standard), PAS `requests`** : sur
+  Windows, `ssl.create_default_context()` utilise le magasin de
+  certificats de l'OS lui-même, pas un fichier `certifi` embarqué à part
+  -- une dépendance de moins à empaqueter correctement dans l'exe gelé
+  (voir les trois correctifs de packaging PaddleOCR de ce même projet,
+  tous causés par des fichiers que PyInstaller ne devine pas qu'il faut
+  embarquer -- éviter d'en ajouter un quatrième volontairement).
+
+**Interface (page Paramètres, carte « Mises à jour »)** : jamais de
+vérification automatique au démarrage -- uniquement au clic sur
+« Chercher une mise à jour » (`UpdateCheckWorker`, thread séparé, un appel
+réseau ne doit jamais geler l'interface). Une version plus récente trouvée
+fait apparaître « Mettre à jour » ; confirmation demandée, puis
+téléchargement avec barre de progression (`UpdateDownloadWorker`) et,
+une fois terminé, `updater.launch_installer_and_quit()` puis fermeture de
+TRANSLAX -- « comme sur VS Code » : un clic, tout s'enchaîne.
+
+**Mécanique de remplacement de l'exe en cours d'exécution** -- le vrai
+problème technique derrière « tout le reste se lance » : le fichier
+`TRANSLAX.exe` en cours d'exécution reste verrouillé par Windows tant que
+le processus tourne, l'installeur ne peut donc le remplacer qu'une fois
+TRANSLAX réellement terminé. Résolu en deux temps, pas un seul :
+1. TRANSLAX lance l'installeur (`/SILENT /CLOSEAPPLICATIONS /NOCANCEL`)
+   puis se ferme lui-même (`QApplication.quit()`, différé de 1,2 s pour
+   laisser le message final s'afficher) -- le mécanisme PRINCIPAL.
+2. `installer/translax.iss` : `CloseApplications=yes` /
+   `RestartApplications=yes` (Gestionnaire de redémarrage de Windows) --
+   une sécurité SUPPLÉMENTAIRE, utile si une AUTRE instance de TRANSLAX
+   tournait en parallèle, pas le mécanisme principal.
+3. L'entrée `[Run]` de relance automatique existante (voir §5 tricies)
+   perd son flag `skipifsilent` : en mode `/SILENT` (mise à jour), elle
+   s'exécute désormais automatiquement sans personne pour cocher une
+   case -- la MÊME entrée sert l'installation manuelle (case à cocher,
+   comportement inchangé) et la mise à jour automatique, sans les
+   dupliquer.
+
+**Installeur personnalisé** (« se sentir immergé dans le logiciel ») :
+`scripts/build_installer_images.py` dessine, avec Qt (déjà une
+dépendance -- pas besoin de Pillow), une bannière et un petit logo
+reprenant le vrai logo et la vraie palette de TRANSLAX (fond sombre,
+accent bleu -- voir `ui/styles.qss`) plutôt que les images grises par
+défaut d'Inno Setup, exportés en `.bmp` (format exigé par Inno Setup) et
+référencés via `WizardImageFile`/`WizardSmallImageFile`. Régénérées à
+chaque build (`scripts/build_installer.py` les appelle avant `ISCC.exe`)
+-- jamais périmées par rapport à `ui/icon.ico`.
+
+**`scripts/release.py`** (le « bien rodé... confortablement » demandé) :
+une seule commande enchaîne bump de version, build de l'exe, build de
+l'installeur, commit + tag + push Git, et publication de la GitHub
+Release avec l'installeur joint (CLI `gh`, déjà authentifié) -- s'arrête
+au premier échec plutôt que de publier une release incohérente (ex. un
+tag Git sans exe réel derrière). Vérifie d'abord que TRANSLAX n'est pas
+en cours d'exécution (`tasklist`, jamais de dépendance externe comme
+`psutil`) -- le fichier ne peut pas être reconstruit sinon.
+
+**Vérifié réellement** : dépôt créé et poussé pour de vrai sur GitHub ;
+`core/updater.py` testé contre le VRAI dépôt public (vraie réponse API,
+vraie URL de téléchargement, vraie taille de fichier > 100 Mo) et contre
+un vrai petit fichier réellement téléchargé (progression, absence de
+fichier `.part` résiduel, annulation propre) -- pas un simulacre réseau ;
+`tests/test_ui.py` §18 : câblage complet de la carte Paramètres (aucune
+vérification automatique, nouvelle version trouvée/pas trouvée/erreur
+réseau, confirmation, téléchargement, lancement de l'installeur mocké,
+`QApplication.quit()` bien appelé).
+
 ## 6. Interface
 
 ```

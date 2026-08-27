@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -25,6 +26,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -55,12 +57,13 @@ from core import (
     state as state_mod,
     system_info,
     translate,
+    updater,
     version,
     vision_ocr,
 )
 from core.languages import DEFAULT_SOURCE, DEFAULT_TARGET, LANGUAGES
 from ui.titlebar import RESIZE_MARGIN, TITLE_BAR_HEIGHT, TitleBar
-from ui.worker import TranslationWorker
+from ui.worker import TranslationWorker, UpdateCheckWorker, UpdateDownloadWorker
 
 MAX_LOG_LINES = 800
 PROGRESS_ANIMATION_MS = 220  # durée de la transition de la barre de progression : discrète, pas un effet voyant
@@ -565,6 +568,16 @@ class MainWindow(QWidget):
         self._current_job_output_key: str | None = None
         self.thread: QThread | None = None
         self.worker: TranslationWorker | None = None
+        # Mise à jour (page Paramètres, voir _check_for_update) -- dernière
+        # version trouvée sur GitHub, mémorisée entre la vérification et le
+        # clic sur "Mettre à jour" ; threads dédiés, distincts de
+        # `self.thread`/`self.worker` (une vérification/téléchargement de
+        # mise à jour n'a rien à voir avec une traduction en cours).
+        self._latest_release: updater.ReleaseInfo | None = None
+        self._update_check_thread: QThread | None = None
+        self._update_check_worker: UpdateCheckWorker | None = None
+        self._update_download_thread: QThread | None = None
+        self._update_download_worker: UpdateDownloadWorker | None = None
         self._keep_awake = keep_awake.KeepAwake()
         self._auto_reboost_done = False
 
@@ -831,6 +844,136 @@ class MainWindow(QWidget):
         self.clear_cache_button.setEnabled(False)
         self._cache_scan_result = None
 
+    def _check_for_update(self) -> None:
+        """
+        Interroge GitHub (voir core/updater.py), dans un thread séparé --
+        demande explicite de l'utilisateur, 27/08/2026. Jamais automatique :
+        uniquement au clic sur ce bouton précis, jamais au démarrage.
+        """
+        self.check_update_button.setEnabled(False)
+        self.install_update_button.setVisible(False)
+        self.update_status_label.setText("Vérification en cours…")
+
+        self._update_check_thread = QThread(self)
+        self._update_check_worker = UpdateCheckWorker()
+        self._update_check_worker.moveToThread(self._update_check_thread)
+        self._update_check_thread.started.connect(self._update_check_worker.run)
+        self._update_check_worker.finished.connect(self._on_update_check_finished)
+        self._update_check_worker.failed.connect(self._on_update_check_failed)
+        self._update_check_worker.finished.connect(self._update_check_thread.quit)
+        self._update_check_worker.failed.connect(self._update_check_thread.quit)
+        self._update_check_thread.finished.connect(self._on_update_check_thread_finished)
+        self._update_check_thread.start()
+
+    @Slot(object)
+    def _on_update_check_finished(self, info) -> None:
+        self.check_update_button.setEnabled(True)
+        self._latest_release = info
+        if updater.is_newer(info.version, version.VERSION):
+            notes = f"\n\n{info.notes}" if info.notes else ""
+            self.update_status_label.setText(
+                f"Nouvelle version disponible : {info.version} (actuelle : {version.VERSION}).{notes}"
+            )
+            self.install_update_button.setVisible(True)
+        else:
+            self.update_status_label.setText(f"Vous avez déjà la dernière version ({version.VERSION}).")
+            self.install_update_button.setVisible(False)
+
+    @Slot(str)
+    def _on_update_check_failed(self, message: str) -> None:
+        self.check_update_button.setEnabled(True)
+        self.install_update_button.setVisible(False)
+        self.update_status_label.setText(f"Impossible de vérifier : {message}")
+
+    @Slot()
+    def _on_update_check_thread_finished(self) -> None:
+        if self._update_check_thread is not None:
+            self._update_check_thread.deleteLater()
+        self._update_check_thread = None
+        self._update_check_worker = None
+
+    def _install_update(self) -> None:
+        """
+        Demande confirmation puis télécharge l'installeur de la version
+        trouvée -- demande explicite de l'utilisateur : « comme sur VS
+        Code, on clique et tout le reste se lance » -- le téléchargement,
+        le lancement de l'installeur et la fermeture de TRANSLAX
+        s'enchaînent ensuite sans autre confirmation (voir
+        _on_update_downloaded).
+        """
+        if self._latest_release is None:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Mettre à jour TRANSLAX")
+        box.setText(f"Télécharger et installer la version {self._latest_release.version} ?")
+        box.setInformativeText(
+            "TRANSLAX se fermera automatiquement une fois le téléchargement terminé pour "
+            "achever l'installation, puis se relancera tout seul."
+        )
+        box.addButton("Annuler", QMessageBox.RejectRole)
+        confirm_btn = box.addButton("Mettre à jour", QMessageBox.AcceptRole)
+        box.exec()
+        if box.clickedButton() is not confirm_btn:
+            return
+
+        self.check_update_button.setEnabled(False)
+        self.install_update_button.setEnabled(False)
+        self.update_progress_bar.setVisible(True)
+        self.update_progress_bar.setRange(0, 0)  # indéterminé tant que la taille totale n'est pas connue
+        self.update_status_label.setText("Téléchargement…")
+
+        dest = Path(tempfile.gettempdir()) / f"TRANSLAX-Setup-{self._latest_release.version}.exe"
+        self._update_download_thread = QThread(self)
+        self._update_download_worker = UpdateDownloadWorker(self._latest_release, dest)
+        self._update_download_worker.moveToThread(self._update_download_thread)
+        self._update_download_thread.started.connect(self._update_download_worker.run)
+        self._update_download_worker.progress.connect(self._on_update_progress)
+        self._update_download_worker.finished.connect(self._on_update_downloaded)
+        self._update_download_worker.failed.connect(self._on_update_download_failed)
+        self._update_download_worker.finished.connect(self._update_download_thread.quit)
+        self._update_download_worker.failed.connect(self._update_download_thread.quit)
+        self._update_download_thread.finished.connect(self._on_update_download_thread_finished)
+        self._update_download_thread.start()
+
+    @Slot(int, int)
+    def _on_update_progress(self, done: int, total: int) -> None:
+        if total > 0:
+            self.update_progress_bar.setRange(0, total)
+            self.update_progress_bar.setValue(done)
+            self.update_status_label.setText(f"Téléchargement… {format_size(done)} / {format_size(total)}")
+        else:
+            self.update_status_label.setText(f"Téléchargement… {format_size(done)}")
+
+    @Slot(object)
+    def _on_update_downloaded(self, installer_path: Path) -> None:
+        """
+        Le téléchargement est terminé : lance l'installeur (silencieux, se
+        relance tout seul -- voir installer/translax.iss) puis ferme
+        TRANSLAX. Le petit délai avant `quit()` laisse le message
+        s'afficher à l'écran -- sans lui, la fenêtre disparaîtrait avant
+        que qui que ce soit n'ait le temps de le lire.
+        """
+        self.update_status_label.setText(
+            "Téléchargement terminé -- installation en cours, TRANSLAX va se fermer puis se relancer…"
+        )
+        updater.launch_installer_and_quit(installer_path)
+        QTimer.singleShot(1200, QApplication.instance().quit)
+
+    @Slot(str)
+    def _on_update_download_failed(self, message: str) -> None:
+        self.update_progress_bar.setVisible(False)
+        self.check_update_button.setEnabled(True)
+        self.install_update_button.setEnabled(True)
+        self.update_status_label.setText(f"Échec du téléchargement : {message}")
+
+    @Slot()
+    def _on_update_download_thread_finished(self) -> None:
+        if self._update_download_thread is not None:
+            self._update_download_thread.deleteLater()
+        self._update_download_thread = None
+        self._update_download_worker = None
+
     def _build_settings_page(self) -> None:
         """
         Écran Paramètres (demande explicite de l'utilisateur, 25/08/2026) :
@@ -878,6 +1021,41 @@ class MainWindow(QWidget):
         hw_card.body.addLayout(refresh_row)
 
         root.addWidget(hw_card)
+
+        # Mises à jour (demande explicite de l'utilisateur, 27/08/2026 :
+        # « comme sur VS Code, avec un bouton update où on clique et tout
+        # le reste se lance ») -- voir core/updater.py (Releases GitHub du
+        # dépôt public) et _check_for_update/_install_update plus bas.
+        # Jamais de vérification automatique au démarrage : uniquement au
+        # clic explicite sur « Chercher une mise à jour ».
+        update_card = Card("Mises à jour")
+        update_card.body.addWidget(_wrapped_label(
+            f"Version installée : {version.VERSION}. Vérifie sur GitHub si une version plus "
+            "récente est disponible."
+        ))
+        self.update_status_label = _wrapped_label("Vérification non lancée.")
+        self.update_status_label.setObjectName("outputPreview")
+        update_card.body.addWidget(self.update_status_label)
+
+        self.update_progress_bar = QProgressBar()
+        self.update_progress_bar.setRange(0, 100)
+        self.update_progress_bar.setValue(0)
+        self.update_progress_bar.setVisible(False)
+        update_card.body.addWidget(self.update_progress_bar)
+
+        update_buttons = QVBoxLayout()
+        update_buttons.setSpacing(8)
+        self.check_update_button = QPushButton("Chercher une mise à jour")
+        self.check_update_button.clicked.connect(self._check_for_update)
+        self.install_update_button = QPushButton("Mettre à jour")
+        self.install_update_button.setObjectName("primary")
+        self.install_update_button.setVisible(False)
+        self.install_update_button.clicked.connect(self._install_update)
+        update_buttons.addWidget(self.check_update_button)
+        update_buttons.addWidget(self.install_update_button)
+        update_card.body.addLayout(update_buttons)
+
+        root.addWidget(update_card)
 
         about_card = Card("À propos de TRANSLAX")
         about_card.body.addWidget(_wrapped_label(
