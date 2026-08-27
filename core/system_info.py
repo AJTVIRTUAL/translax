@@ -13,12 +13,19 @@ l'appelle pas.
 TRANSLAX ne se comportent PAS tous pareil vis-à-vis d'un GPU disponible
 (vérifié en relisant `core/translate.py`, pas supposé) :
   - Précis, OPUS-MT, MADLAD-400 (tous basés sur `transformers`) utilisent
-    un GPU CUDA disponible automatiquement (`torch.cuda.is_available()`).
+    automatiquement le meilleur GPU disponible -- CUDA (NVIDIA) ou MPS
+    (Metal, Apple Silicon), voir `core/translate.py::_select_device`.
   - Turbo (CTranslate2) tourne TOUJOURS en CPU, même si un GPU est
     disponible -- ce moteur a été conçu et validé pour l'accélération CPU
-    par quantification (voir SPEC.md §5 terdecies), pas pour CUDA.
+    par quantification (voir SPEC.md §5 terdecies), pas pour CUDA/MPS.
 `GPU_ENGINES`/`CPU_ONLY_ENGINES` ci-dessous reflètent cette distinction
 réelle plutôt qu'une simplification qui induirait en erreur sur Turbo.
+
+**MPS ajouté le 27/08/2026** (demande explicite de l'utilisateur, après
+installation sur son MacBook Pro Apple Silicon) : CUDA n'existe QUE sur
+du matériel NVIDIA -- jamais sur Mac, quelle que soit la puce -- MPS
+(Metal Performance Shaders) est le vrai équivalent Apple Silicon à
+détecter, pas une variante de CUDA à débloquer autrement.
 """
 from __future__ import annotations
 
@@ -39,9 +46,10 @@ class SystemInfo:
     os_name: str
     cpu_name: str
     cpu_cores: int
-    gpu_available: bool     # torch.cuda.is_available() -- PyTorch peut vraiment s'en servir, pas juste "un GPU existe"
+    gpu_available: bool     # PyTorch peut vraiment s'en servir (CUDA OU MPS) -- pas juste "un GPU existe"
     gpu_name: str | None
-    device_for_gpu_capable_engines: str  # "cuda" ou "cpu" -- ce que Précis/OPUS-MT/MADLAD-400 utiliseraient réellement
+    gpu_backend: str | None  # "cuda", "mps", ou None -- LEQUEL des deux, pas juste "un GPU"
+    device_for_gpu_capable_engines: str  # "cuda"/"mps"/"cpu" -- ce que Précis/OPUS-MT/MADLAD-400 utiliseraient réellement
     torch_available: bool
     detection_notes: list[str]  # ce qui n'a pas pu être détecté et pourquoi -- jamais caché
 
@@ -83,14 +91,31 @@ def detect() -> SystemInfo:
     torch_available = True
     gpu_available = False
     gpu_name = None
+    gpu_backend = None
     try:
         import torch
-        gpu_available = torch.cuda.is_available()
-        if gpu_available:
+        if torch.cuda.is_available():
+            gpu_available = True
             gpu_name = torch.cuda.get_device_name(0)
+            gpu_backend = "cuda"
+        else:
+            # MPS (Metal Performance Shaders) : équivalent Apple Silicon de
+            # CUDA -- jamais l'inverse, CUDA n'existe que sur du matériel
+            # NVIDIA. `getattr` défensif : le module existe déjà sur des
+            # machines non-Mac (renvoie simplement False là-bas), mais ne
+            # pas supposer sa présence sur une version de PyTorch plus
+            # ancienne qui ne l'aurait pas encore.
+            mps_backend = getattr(torch.backends, "mps", None)
+            if mps_backend is not None and mps_backend.is_available():
+                gpu_available = True
+                # PyTorch ne fournit pas de nom de puce précis via l'API
+                # MPS (contrairement à `torch.cuda.get_device_name`) --
+                # rien à cacher, juste rien de plus précis à afficher.
+                gpu_name = "Apple Silicon (GPU via Metal/MPS)"
+                gpu_backend = "mps"
     except ImportError:
         torch_available = False
-        notes.append("PyTorch n'est pas installé -- impossible de détecter un GPU CUDA.")
+        notes.append("PyTorch n'est pas installé -- impossible de détecter un GPU CUDA ou MPS.")
     except Exception as exc:  # noqa: BLE001 - un diagnostic ne doit jamais planter la page
         notes.append(f"Détection GPU incomplète : {exc}")
 
@@ -100,7 +125,8 @@ def detect() -> SystemInfo:
         cpu_cores=os.cpu_count() or 1,
         gpu_available=gpu_available,
         gpu_name=gpu_name,
-        device_for_gpu_capable_engines="cuda" if gpu_available else "cpu",
+        gpu_backend=gpu_backend,
+        device_for_gpu_capable_engines=gpu_backend or "cpu",
         torch_available=torch_available,
         detection_notes=notes,
     )

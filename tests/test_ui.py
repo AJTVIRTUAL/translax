@@ -1216,7 +1216,11 @@ def main() -> int:
         about_text = window.about_text_label.text()
         check("la carte « À propos » affiche le numéro de version réel",
               version_mod.VERSION in about_text, f"({about_text!r})")
-        check("la carte « À propos » mentionne l'éditeur", "AJTWS" in about_text)
+        # "AJTVIRTUAL" depuis le 27/08/2026 (changement d'éditeur fait
+        # directement par l'utilisateur, commit 9827c73) -- "AJTWS" reste
+        # le nom encore utilisé ailleurs (splash `main.py`, installeur),
+        # incohérence signalée mais pas résolue unilatéralement ici.
+        check("la carte « À propos » mentionne l'éditeur", "AJTVIRTUAL" in about_text)
 
         # Bouton « Gérer les clés API » : doit ouvrir le même ApiKeysDialog
         # que le champ de la page Traduire, pas un doublon divergent.

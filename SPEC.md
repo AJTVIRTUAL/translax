@@ -2206,6 +2206,82 @@ MPS (l'accélération GPU propre à Apple Silicon) -- affichera donc « aucun
 GPU détecté » même si la puce en a un utilisable par PyTorch autrement,
 une vraie limite à corriger plus tard, pas une erreur de ce guide.
 
+## 5 tricies quater. GPU Apple Silicon (MPS) -- Précis/OPUS-MT/MADLAD-400 (ajouté le 27/08/2026)
+
+L'utilisateur a réellement installé TRANSLAX sur son MacBook Pro Apple
+Silicon (§5 tricies tres) et demande comment activer « le GPU... avec
+CUDA etc. ». Correction nécessaire avant d'implémenter : **CUDA n'existe
+que sur du matériel NVIDIA, jamais sur Mac quelle que soit la puce** --
+rien à débloquer côté CUDA. Le vrai équivalent Apple Silicon est **MPS**
+(Metal Performance Shaders), le backend GPU que PyTorch expose via
+`torch.backends.mps` -- c'est celui-là qu'il fallait câbler, pas une
+variante de CUDA.
+
+**`core/translate.py`** -- nouvelle fonction `_select_device()` (CUDA >
+MPS > CPU), qui remplace les trois occurrences identiques de
+`"cuda" if torch.cuda.is_available() else "cpu"` dans `PreciseEngine`,
+`OpusMtEngine` et `MadladEngine` (les trois moteurs basés sur
+`transformers`) :
+- `torch.cuda.is_available()` d'abord (jamais vrai sur Mac, quelle que
+  soit la puce -- rien de spécifique à MPS ne devrait jamais faire
+  apparaître ce chemin sur cette plateforme) ;
+- sinon `getattr(torch.backends, "mps", None)` puis `.is_available()` --
+  `getattr` défensif, `torch.backends.mps` existe déjà sur des machines
+  non-Mac (renvoie `False` là-bas) mais ne pas supposer sa présence sur
+  une version de PyTorch plus ancienne qui ne l'aurait pas encore ;
+- sinon `"cpu"`, comportement inchangé pour toute machine sans GPU
+  utilisable (Windows/Linux sans CUDA, ou Mac Intel).
+- **Turbo (CTranslate2, `FastEngine`) reste volontairement inchangé** --
+  toujours codé en dur sur `device="cpu"`, CTranslate2 n'ayant pas de
+  backend Metal/MPS ; ce moteur a été conçu et validé pour l'accélération
+  CPU par quantification (§5 terdecies), pas pour un GPU.
+
+**`core/system_info.py`** -- corrige la limite documentée dans
+`MACOS_BUILD.md` (§5 tricies tres) : le diagnostic de la page Paramètres
+ne regardait que CUDA et affichait « aucun GPU détecté » sur un Mac même
+quand la puce en a un utilisable par PyTorch. `SystemInfo` gagne un champ
+`gpu_backend: str | None` (`"cuda"` / `"mps"` / `None` -- LEQUEL des deux
+GPU, pas juste « il y en a un »), et `detect()` vérifie MPS en repli
+après CUDA avec le même `getattr` défensif que `_select_device()`. Nom
+affiché pour MPS : « Apple Silicon (GPU via Metal/MPS) » -- PyTorch ne
+fournit pas de nom de puce précis via l'API MPS (contrairement à
+`torch.cuda.get_device_name()`), rien de plus précis à cacher ni à
+inventer. `device_for_gpu_capable_engines` devient `gpu_backend or "cpu"`.
+
+**`ui/main_window.py`** -- `_refresh_system_info()` affiche « CUDA » ou
+« Metal/MPS » selon `info.gpu_backend` au lieu de supposer CUDA partout ;
+le cas `gpu_available=False` précise maintenant « aucun GPU utilisable
+par PyTorch (ni CUDA ni Metal/MPS) », honnête sur les deux familles
+vérifiées plutôt que de ne mentionner que CUDA comme avant.
+
+**Vérifié réellement, mais avec une limite honnête** : aucune machine
+Apple Silicon n'existe dans cette session Windows -- ni CUDA ni MPS n'y
+sont réellement disponibles pour tester le VRAI chemin GPU de bout en
+bout. Ce qui a pu être vérifié pour de vrai ici :
+- `tests/test_system_info.py` (nouvelle section 3) et `tests/test_translate.py`
+  (nouvelle section 7) : sur cette machine de référence (AMD Ryzen 7
+  4700U, aucun GPU dédié), `gpu_backend` reste bien `None` et
+  `_select_device()` retourne bien `"cpu"` -- aucune régression sur PC.
+- La LOGIQUE de priorité CUDA > MPS et le repli MPS quand CUDA est
+  absent sont vérifiés réellement en simulant tour à tour
+  `torch.cuda.is_available`/`torch.backends.mps.is_available`
+  (monkeypatch temporaire, restauré dans un `finally`) -- pas une
+  supposition sur ce que ferait le code, une exécution réelle du VRAI
+  `_select_device()`/`detect()` avec ces deux fonctions substituées.
+- **Non vérifié et non vérifiable depuis cette session** : que PyTorch
+  charge et exécute réellement NLLB/Marian/T5 sur un vrai backend MPS
+  sans lever d'erreur d'opération manquante (MPS a historiquement des
+  trous de couverture pour certaines opérations précises). À valider
+  pour de vrai depuis la session Claude Code tournant sur le Mac lui-même
+  (`git pull`, reconstruire, lancer une vraie traduction avec Précis/
+  OPUS-MT/MADLAD-400, confirmer que la page Paramètres affiche bien
+  « Metal/MPS » et non « aucun GPU »).
+
+`MACOS_BUILD.md` mis à jour en conséquence : la limite « ne détecte pas
+MPS » notée en §5 tricies tres est retirée de la liste des limites
+connues (corrigée par ce qui précède), la limite « mise à jour intégrée
+Windows uniquement » reste, elle, non résolue -- chantier distinct.
+
 ## 6. Interface
 
 ```

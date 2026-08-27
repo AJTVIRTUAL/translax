@@ -45,6 +45,8 @@ def main() -> int:
           not info.gpu_available and info.gpu_name is None, f"(gpu_available={info.gpu_available})")
     check("le device pour Précis/OPUS-MT/MADLAD-400 est bien 'cpu' en l'absence de GPU",
           info.device_for_gpu_capable_engines == "cpu")
+    check("aucun backend GPU (ni CUDA ni MPS) sur cette machine sans GPU dédié",
+          info.gpu_backend is None, f"(gpu_backend={info.gpu_backend!r})")
     check("« Ryzen » apparaît dans le nom de CPU détecté sur cette machine",
           "ryzen" in info.cpu_name.lower(), f"({info.cpu_name!r})")
 
@@ -68,6 +70,33 @@ def main() -> int:
     check("une note explique l'absence de PyTorch, rien de caché",
           any("PyTorch" in note for note in info_no_torch.detection_notes), f"({info_no_torch.detection_notes})")
     check("cpu_name reste renseigné même sans torch (détection indépendante)", bool(info_no_torch.cpu_name))
+
+    print("\n3. Détection MPS (Apple Silicon) -- simulée : cette machine n'en a pas réellement")
+    # CUDA n'existe que sur du matériel NVIDIA -- jamais testable pour de
+    # vrai sur cette machine de référence (ni sur un Mac). MPS non plus,
+    # cette machine étant un PC Windows -- mais la LOGIQUE de détection
+    # (torch.backends.mps.is_available() -> True) peut être vérifiée
+    # réellement en la simulant, demande explicite de l'utilisateur,
+    # 27/08/2026, après avoir installé TRANSLAX sur son MacBook Pro.
+    import torch
+
+    real_cuda_available = torch.cuda.is_available
+    real_mps_is_available = torch.backends.mps.is_available
+    torch.cuda.is_available = lambda: False
+    torch.backends.mps.is_available = lambda: True
+    try:
+        info_mps = system_info.detect()
+    finally:
+        torch.cuda.is_available = real_cuda_available
+        torch.backends.mps.is_available = real_mps_is_available
+
+    check("gpu_available=True quand MPS est disponible", info_mps.gpu_available)
+    check("gpu_backend vaut bien 'mps', pas 'cuda' (CUDA n'existe pas sur Apple Silicon)",
+          info_mps.gpu_backend == "mps", f"(gpu_backend={info_mps.gpu_backend!r})")
+    check("le nom affiché mentionne Apple Silicon/Metal, pas un nom de carte NVIDIA",
+          info_mps.gpu_name is not None and "Apple" in info_mps.gpu_name, f"({info_mps.gpu_name!r})")
+    check("le device pour Précis/OPUS-MT/MADLAD-400 devient bien 'mps'",
+          info_mps.device_for_gpu_capable_engines == "mps")
 
     print()
     if failures:

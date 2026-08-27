@@ -362,6 +362,46 @@ class _HeartbeatCriteria:
         return torch.zeros(input_ids.shape[0], dtype=torch.bool, device=input_ids.device)
 
 
+def _select_device() -> str:
+    """
+    Choisit le meilleur device PyTorch réellement disponible sur CETTE
+    machine, dans l'ordre CUDA > MPS > CPU -- utilisé par les trois
+    moteurs basés sur `transformers` (Précis, OPUS-MT, MADLAD-400).
+    Turbo (CTranslate2, voir `FastEngine`) n'appelle jamais cette
+    fonction : il tourne TOUJOURS en CPU par conception, CTranslate2
+    n'ayant pas de backend Metal/MPS.
+
+    MPS (Metal Performance Shaders) : l'équivalent Apple Silicon de CUDA
+    -- demande explicite de l'utilisateur, 27/08/2026, après avoir
+    installé TRANSLAX sur son MacBook Pro. CUDA lui-même n'existe QUE sur
+    du matériel NVIDIA : aucun réglage possible ne le ferait apparaître
+    sur un Mac, quelle que soit la puce -- MPS est le vrai équivalent à
+    activer, pas une façon d'obtenir CUDA là où il n'existe pas.
+
+    `getattr(torch.backends, "mps", None)` avant d'appeler
+    `.is_available()` : le module existe déjà dans PyTorch même sur des
+    machines non-Mac (il renvoie simplement `False` là-bas), mais rester
+    défensif au lieu de supposer sa présence évite un plantage sur une
+    version de PyTorch plus ancienne qui ne l'aurait pas encore.
+
+    **Non testé sur un vrai Mac au moment d'écrire cette fonction** (voir
+    MACOS_BUILD.md) : le support MPS de `transformers`/PyTorch a
+    historiquement des trous de couverture pour certaines opérations
+    précises -- pas forcément celles utilisées par NLLB/Marian/T5, mais
+    aucune garantie sans un vrai test sur cette machine. Si une opération
+    manque, PyTorch lève un message clair nommant l'opération en cause --
+    utile à transmettre pour ajuster si ça arrive.
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps"
+    return "cpu"
+
+
 class PreciseEngine:
     """
     Moteur « Précis » : transformers + NLLB-200, un segment à la fois.
@@ -409,7 +449,7 @@ class PreciseEngine:
 
         if self.threads:
             torch.set_num_threads(self.threads)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = _select_device()
 
         if on_status:
             on_status(f"Chargement du modèle {self.model_id} sur {self.device}…")
@@ -655,7 +695,7 @@ class OpusMtEngine:
 
         if self.threads:
             torch.set_num_threads(self.threads)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = _select_device()
 
         if on_status:
             on_status(f"Chargement du modèle {self.model_id} sur {self.device}…")
@@ -791,7 +831,7 @@ class MadladEngine:
 
         if self.threads:
             torch.set_num_threads(self.threads)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = _select_device()
 
         if on_status:
             on_status(

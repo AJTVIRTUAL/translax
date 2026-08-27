@@ -207,8 +207,14 @@ essaie au moins :
   ou métadonnée que PyInstaller ne détecte pas tout seul), même si le
   correctif exact peut différer sur Mac.
 - Une petite traduction avec le modèle **600M** par défaut.
-- La page **Paramètres** → « Analyser » (diagnostic matériel) -- voir la
-  limite connue à ce sujet plus bas, avant de s'inquiéter du résultat.
+- La page **Paramètres** → « Analyser » (diagnostic matériel) -- doit
+  maintenant afficher « Metal/MPS » si ta puce Apple Silicon est
+  utilisable par PyTorch (voir §5 tricies quater dans `SPEC.md`, ajouté
+  le 27/08/2026 -- CUDA n'existe que sur du matériel NVIDIA, jamais sur
+  Mac ; MPS est le vrai équivalent Apple Silicon, câblé pour la première
+  fois ici, **non testé sur un vrai Mac au moment d'écrire ce guide**).
+  Si ça affiche encore « aucun GPU détecté » sur ta machine, transmets le
+  résultat exact -- utile pour ajuster.
 
 ## 7. Construire le `.app`
 
@@ -263,9 +269,15 @@ Ou double-clic depuis le Finder. À vérifier :
   `sacremoses`, lui, est pur Python) ;
 - la liste de reprise, Pause/Stop, les boutons ⓘ -- tout ce qui est pur
   Python/Qt et déjà testé côté Windows n'a aucune raison de se comporter
-  différemment ici, mais un coup d'œil rapide ne coûte rien.
+  différemment ici, mais un coup d'œil rapide ne coûte rien ;
+- **GPU Metal/MPS** (§5 tricies quater) : lance une traduction avec
+  Précis, OPUS-MT ou MADLAD-400 (jamais Turbo -- toujours CPU par
+  conception, voir plus haut) et regarde si c'est sensiblement plus
+  rapide qu'en CPU pur -- c'est le vrai test, la page Paramètres affichant
+  « Metal/MPS » confirme seulement que PyTorch VOIT le GPU, pas qu'il
+  s'en sert sans erreur pendant une vraie traduction.
 
-## Deux limites connues sur Mac, pas des bugs à corriger maintenant
+## Une limite connue sur Mac, pas un bug à corriger maintenant
 
 **Mise à jour intégrée** (« Chercher une mise à jour », page Paramètres)
 : fonctionne aujourd'hui uniquement sur Windows -- elle cherche
@@ -278,16 +290,10 @@ une erreur à corriger dans l'immédiat. Whatever tu construis ici doit
 pour l'instant être remplacé à la main (répéter §4 → §8) à chaque
 nouvelle version, exactement comme avant.
 
-**Diagnostic matériel** (page Paramètres) : `torch.cuda.is_available()`
-répondra `False` sur ce Mac, même si la puce Apple Silicon a un vrai GPU
-utilisable par PyTorch via un mécanisme différent (`MPS`, pas `CUDA`) --
-la page affichera donc « aucun GPU détecté », ce qui est **littéralement
-vrai pour CUDA** mais donne une impression trompeuse de la vraie
-puissance disponible sur cette machine. Pas corrigé ici volontairement :
-un vrai correctif demanderait de détecter MPS séparément ET de vérifier
-si Précis/OPUS-MT/MADLAD-400 (les moteurs `transformers`) l'utilisent
-réellement une fois activés -- un chantier à part, à faire une fois le
-reste confirmé fonctionnel.
+*(L'ancienne deuxième limite listée ici -- le diagnostic matériel qui ne
+détectait que CUDA, jamais MPS -- est corrigée depuis le 27/08/2026, voir
+§5 tricies quater dans `SPEC.md`. Toujours à confirmer pour de vrai sur
+cette machine, voir le test GPU Metal/MPS à l'étape 8 ci-dessus.)*
 
 ## En cas de blocage
 

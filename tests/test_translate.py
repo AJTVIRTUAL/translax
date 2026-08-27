@@ -37,6 +37,13 @@ PAS téléchargés en développement (voir SPEC.md) :
     échec) tant que le modèle complet n'est pas en cache sur la machine qui
     exécute ce test.
 
+Pour _select_device() (section 7, ajouté le 27/08/2026 -- GPU Mac) :
+  - la vraie valeur sur cette machine (aucun GPU dédié) reste "cpu" ;
+  - la priorité CUDA > MPS, et le repli MPS quand CUDA est absent, sont
+    vérifiés en simulant torch.cuda.is_available()/torch.backends.mps
+    .is_available() -- ni CUDA (NVIDIA) ni MPS (Apple Silicon) n'existent
+    réellement sur cette machine de développement.
+
     python tests/test_translate.py
 """
 from __future__ import annotations
@@ -313,6 +320,42 @@ def main() -> int:
                       f"(-> {out_madlad!r})")
         finally:
             madlad.unload()
+
+    print("\n7. _select_device() -- CUDA > MPS > CPU (ajouté le 27/08/2026, GPU Mac)")
+    # Sur CETTE machine (AMD Ryzen 7 4700U, aucun GPU dédié -- voir SPEC.md),
+    # ni CUDA ni MPS ne sont réellement disponibles : la vraie valeur de
+    # retour doit être "cpu", exactement ce que Précis/OPUS-MT/MADLAD-400
+    # utilisaient déjà avant l'ajout de MPS -- aucune régression sur PC.
+    check("device réel sur cette machine (sans GPU) : 'cpu'", translate._select_device() == "cpu")
+
+    # La priorité CUDA > MPS et le repli MPS > CPU ne sont testables pour de
+    # vrai que sur du matériel NVIDIA ou Apple Silicon, ni l'un ni l'autre
+    # ici -- la LOGIQUE de sélection, elle, se vérifie réellement en
+    # simulant les deux backends tour à tour (même approche que
+    # tests/test_system_info.py, demande explicite de l'utilisateur après
+    # installation sur son MacBook Pro).
+    import torch
+
+    real_cuda_available = torch.cuda.is_available
+    real_mps_is_available = torch.backends.mps.is_available
+
+    torch.cuda.is_available = lambda: True
+    torch.backends.mps.is_available = lambda: True
+    try:
+        check("CUDA est bien préféré à MPS quand les deux sont \"disponibles\"",
+              translate._select_device() == "cuda")
+    finally:
+        torch.cuda.is_available = real_cuda_available
+        torch.backends.mps.is_available = real_mps_is_available
+
+    torch.cuda.is_available = lambda: False
+    torch.backends.mps.is_available = lambda: True
+    try:
+        check("MPS est bien choisi quand CUDA est absent mais MPS \"disponible\"",
+              translate._select_device() == "mps")
+    finally:
+        torch.cuda.is_available = real_cuda_available
+        torch.backends.mps.is_available = real_mps_is_available
 
     return _finish()
 
