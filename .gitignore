@@ -1,0 +1,28 @@
+# Environnement virtuel Python -- jamais versionné, différent sur chaque
+# machine (voir MACOS_BUILD.md : un .venv Windows ne fonctionne pas sur Mac).
+.venv/
+__pycache__/
+*.pyc
+
+# Sorties de construction PyInstaller/Inno Setup -- régénérées à chaque
+# build (voir SPEC.md, INSTALLER_BUILD.md), jamais la source de vérité.
+build/
+dist/
+dist_installer/
+
+# Fichiers de travail créés par TRANSLAX lui-même à l'exécution (état de
+# reprise, cache OCR -- voir core/state.py) : jamais du code du projet.
+.translax/
+
+# Éditeurs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secret réel (clé API) trouvé à la racine du projet au moment de mettre
+# en place ce dépôt Git -- ne doit JAMAIS partir sur GitHub. Exclu par nom
+# exact plutôt que par un motif générique, pour ne jamais donner
+# l'impression trompeuse que "les clés sont gérées comme il faut" alors
+# que ce n'est qu'un seul fichier précis mis de côté.
+doc/claud_api_key

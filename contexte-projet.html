@@ -1,0 +1,235 @@
+<title>Contexte TRANSLAX</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,300;0,400;0,500;0,700;1,400&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f6fb;
+    --surface: #ffffff;
+    --surface-2: #eef0fa;
+    --border: #dfe2f0;
+    --text: #12141f;
+    --text-2: #565b73;
+    --text-3: #8388a3;
+    --accent-a: #3b5fe0;
+    --accent-b: #17b6ac;
+    --accent-a-soft: rgba(59,95,224,0.1);
+    --warn: #a3610a;
+    --warn-bg: #fbf0dd;
+    --good: #147d53;
+    --good-bg: #e4f7ee;
+    --code-bg: #eef0fa;
+    --shadow: 0 1px 2px rgba(18,20,31,0.04), 0 10px 26px rgba(18,20,31,0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0a0c16;
+      --surface: #131627;
+      --surface-2: #191d33;
+      --border: #262b45;
+      --text: #f2f4fc;
+      --text-2: #a6acc9;
+      --text-3: #6b7194;
+      --accent-a: #5b82ff;
+      --accent-b: #2fd6c9;
+      --accent-a-soft: rgba(91,130,255,0.14);
+      --warn: #e7ab52;
+      --warn-bg: #362a12;
+      --good: #3fdb98;
+      --good-bg: #113328;
+      --code-bg: #0f1220;
+      --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 16px 40px rgba(0,0,0,0.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0c16;
+    --surface: #131627;
+    --surface-2: #191d33;
+    --border: #262b45;
+    --text: #f2f4fc;
+    --text-2: #a6acc9;
+    --text-3: #6b7194;
+    --accent-a: #5b82ff;
+    --accent-b: #2fd6c9;
+    --accent-a-soft: rgba(91,130,255,0.14);
+    --warn: #e7ab52;
+    --warn-bg: #362a12;
+    --good: #3fdb98;
+    --good-bg: #113328;
+    --code-bg: #0f1220;
+    --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 16px 40px rgba(0,0,0,0.4);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Roboto", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 16.5px; line-height: 1.65; -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: "Roboto Mono", ui-monospace, Menlo, Consolas, monospace; }
+  ::selection { background: var(--accent-b); color: #06140f; }
+  a { color: var(--accent-a); }
+
+  .page { max-width: 740px; margin: 0 auto; padding: 3.6rem 1.5rem 5rem; }
+
+  .eyebrow {
+    font-family: "Roboto Mono", monospace; font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-3); display: flex; align-items: center; gap: 0.6em; margin-bottom: 1rem;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: linear-gradient(135deg, var(--accent-a), var(--accent-b)); flex: none; }
+  h1 {
+    font-weight: 700; font-size: clamp(1.7rem, 4.2vw, 2.15rem); line-height: 1.2; letter-spacing: -0.01em;
+    margin: 0 0 0.6rem; text-wrap: balance;
+  }
+  .lede { font-size: 1.08rem; color: var(--text-2); max-width: 62ch; margin: 0; }
+
+  .toc {
+    display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1.6rem 0 0; padding: 0; list-style: none;
+  }
+  .toc a {
+    font-family: "Roboto Mono", monospace; font-size: 0.76rem; color: var(--text-2); text-decoration: none;
+    border: 1px solid var(--border); border-radius: 100px; padding: 0.4em 0.9em; background: var(--surface);
+  }
+  .toc a:hover { border-color: var(--accent-b); color: var(--text); }
+
+  section { margin-top: 3rem; scroll-margin-top: 1.5rem; }
+  h2 {
+    font-size: 1.15rem; font-weight: 700; letter-spacing: -0.005em; margin: 0 0 1rem;
+    padding-bottom: 0.6rem; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 0.6em;
+  }
+  h2 .n { font-family: "Roboto Mono", monospace; font-weight: 400; color: var(--text-3); font-size: 0.9rem; }
+  p { margin: 0.85rem 0; }
+  code {
+    font-family: "Roboto Mono", monospace; background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0.1em 0.4em; font-size: 0.86em;
+  }
+  a code { color: var(--accent-a); }
+
+  .rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.9rem; }
+  .rules li {
+    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent-a);
+    border-radius: 10px; padding: 0.9rem 1.1rem; box-shadow: var(--shadow);
+  }
+  .rules li strong { display: block; margin-bottom: 0.2rem; }
+  .rules li span { color: var(--text-2); font-size: 0.94rem; }
+
+  .timeline { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .timeline li {
+    counter-increment: step; position: relative; padding: 0 0 1.6rem 2.4rem; border-left: 1px solid var(--border);
+  }
+  .timeline li:last-child { border-left-color: transparent; padding-bottom: 0; }
+  .timeline li::before {
+    content: counter(step, decimal-leading-zero);
+    position: absolute; left: -0.72rem; top: 0;
+    font-family: "Roboto Mono", monospace; font-size: 0.68rem; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 50%;
+    width: 1.5rem; height: 1.5rem; display: flex; align-items: center; justify-content: center;
+  }
+  .timeline strong { display: block; margin-bottom: 0.25rem; }
+  .timeline p { margin: 0.25rem 0 0; color: var(--text-2); font-size: 0.95rem; }
+
+  .callout { border-radius: 12px; padding: 1rem 1.2rem; margin: 1.2rem 0; border: 1px solid var(--border); background: var(--surface-2); }
+  .callout.good { background: var(--good-bg); border-color: color-mix(in srgb, var(--good) 35%, var(--border)); }
+  .callout .tag { font-family: "Roboto Mono", monospace; font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; display: block; margin-bottom: 0.5rem; }
+  .callout.good .tag { color: var(--good); }
+  .callout p:first-of-type { margin-top: 0; }
+  .callout p:last-of-type { margin-bottom: 0; }
+  .callout a.mono { word-break: break-all; }
+
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.8rem; }
+  .cell { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; box-shadow: var(--shadow); }
+  .cell .k { font-family: "Roboto Mono", monospace; font-size: 0.78rem; color: var(--accent-a); margin-bottom: 0.3rem; }
+  .cell p { margin: 0; font-size: 0.92rem; color: var(--text-2); }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+
+  .next { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+  .next li { display: grid; grid-template-columns: 1.1rem 1fr; gap: 0.7rem; font-size: 0.98rem; }
+  .next li::before { content: "→"; color: var(--accent-b); font-weight: 700; }
+
+  footer {
+    margin-top: 3.5rem; padding-top: 1.4rem; border-top: 1px solid var(--border);
+    font-family: "Roboto Mono", monospace; font-size: 0.76rem; color: var(--text-3);
+  }
+</style>
+
+<div class="page">
+
+  <header>
+    <div class="eyebrow"><span class="dot"></span>Note de contexte — usage privé</div>
+    <h1>Contexte du projet TRANSLAX</h1>
+    <p class="lede">À coller en début d'une nouvelle conversation pour reprendre le développement de TRANSLAX là où il en est, sans perdre les décisions déjà prises.</p>
+    <ul class="toc">
+      <li><a href="#projet">Le projet</a></li>
+      <li><a href="#regles">Règles établies</a></li>
+      <li><a href="#historique">Historique</a></li>
+      <li><a href="#suite">Prochaines pistes</a></li>
+    </ul>
+  </header>
+
+  <section id="projet">
+    <h2><span class="n">01</span><span>Qui je suis / ce qu'on construit</span></h2>
+    <p>Je développe <strong>TRANSLAX</strong>, un logiciel de traduction de documents 100% local (aucune donnée envoyée en ligne), basé sur le modèle NLLB-200 de Meta AI. Le projet vit dans <code>C:\DEV\TRANSLAX\</code>. Deux volets en parallèle :</p>
+    <div class="grid">
+      <div class="cell"><div class="k">Pipeline de traduction</div><p><code>txtTraduction/pyTraduction/</code> — scripts Python pour traduire mes propres livres/documents EN → FR.</p></div>
+      <div class="cell"><div class="k">Application de bureau</div><p><code>PROJECTS/TRANSLAX/</code> — appli PySide6 avec interface graphique complète, <strong>v1.10.0</strong> actuellement.</p></div>
+    </div>
+  </section>
+
+  <section id="regles">
+    <h2><span class="n">02</span><span>Règles établies — à respecter dans la suite</span></h2>
+    <ul class="rules">
+      <li><strong>Ne jamais traduire un livre/document en le générant toi-même.</strong><span> Question de droits d'auteur — toujours passer par le moteur mécanique local NLLB-200 qui tourne sur ma machine.</span></li>
+      <li><strong>Réglages de traduction sûrs, ne pas changer sans vérifier :</strong><span> séquentiel (<code>batch_size=1</code>), <code>num_beams=4</code>, <code>no_repeat_ngram_size=3</code>. Le batching (&gt;1) et le décodage glouton (<code>num_beams=1</code>) ont provoqué des boucles de répétition — bug réel, déjà constaté.</span></li>
+      <li><strong>Écriture du fichier de sortie incrémentale obligatoire.</strong><span> Flush après chaque segment traduit — un bug passé écrivait tout seulement à la fin, laissant croire que le programme était bloqué pendant des heures.</span></li>
+      <li><strong>CTranslate2 : deux statuts différents à ne pas confondre.</strong><span> La première intégration montrait des régressions de qualité mesurées. Une intégration plus propre existe maintenant dans l'appli sous le nom « 600M — Turbo », ~13× plus rapide, sortie quasi identique. Les deux coexistent, l'utilisateur choisit.</span></li>
+      <li><strong>Machine de référence :</strong><span> HP Pavilion, AMD Ryzen 7 4700U, 8 cœurs, pas de GPU dédié. Toute mesure "sur cette machine" dans le code/les docs y fait référence.</span></li>
+    </ul>
+  </section>
+
+  <section id="historique">
+    <h2><span class="n">03</span><span>Historique de ce qui a déjà été fait</span></h2>
+    <ol class="timeline">
+      <li><strong>Traduction de <em>The Laws of the Universe and Life</em></strong>
+        <p>PDF → <code>Les lois de l'univers et de la vie.md</code>. Scripts créés : <code>prepare_source.py</code>, <code>translate_document.py</code>, puis <code>cleanup_headings.py</code> pour le nettoyage.</p>
+      </li>
+      <li><strong>Exploration de la vitesse</strong>
+        <p>Batching, décodage glouton, CTranslate2 — voir les règles établies ci-dessus pour les conclusions retenues.</p>
+      </li>
+      <li><strong>Traduction de <em>Bloodlines of the Illuminati</em>, volumes 1 et 2</strong>
+        <p>Fichiers <code>.txt</code> sans aucune ligne vide → nouveau script <code>prepare_book_source.py</code> pour reconstruire des paragraphes par regroupement de phrases. Résultats dans <code>PROJECTS/TRANSLAX_MANUAL/Books_Traduits/</code>.</p>
+      </li>
+      <li><strong>Prompt réutilisable pour lancer une traduction</strong>
+        <p><code>PROJECTS/TRANSLAX_MANUAL/PROMPT_TRADUCTION.md</code> — une commande, deux chemins à changer.</p>
+      </li>
+      <li><strong>Conception puis construction de l'application de bureau</strong>
+        <p>Spec initiale : <code>PROJECTS/TraducteurNLLB-Desktop/SPEC.md</code>. Application réelle dans <code>PROJECTS/TRANSLAX/</code>. 6 profils de modèle disponibles : 600M, 1.3B, 3.3B, 600M Turbo, OPUS-MT (licence CC-BY 4.0), MADLAD-400 (licence Apache 2.0). Un <code>TRANSLAX.exe</code> packagé existe dans <code>dist/</code>.</p>
+      </li>
+      <li><strong>Logo « TX »</strong>
+        <p>Prompt dans <code>LOGO_PROMPT.md</code>, logo obtenu, visible dans <code>captures/icone_apercu.png</code>.</p>
+      </li>
+      <li><strong>Guide de test animé pour un testeur externe</strong>
+        <p>Acer Nitro 16S AI (Ryzen AI 9, RTX, 32 Go RAM) comparé à ma machine de référence. Fichier : <code>PROJECTS/TRANSLAX/translaxguide.html</code>. Contenu : présentation, galerie de captures, installation, alerte CUDA/PyTorch critique, réglages du test, choix du livre (300 pages minimum), checklist de retour.</p>
+        <div class="callout good">
+          <span class="tag">Lien de l'artifact publié</span>
+          <p><a class="mono" href="https://claude.ai/code/artifact/94976f2c-73b9-426f-b259-3922698149f9">claude.ai/code/artifact/94976f2c-73b9-426f-b259-3922698149f9</a></p>
+          <p>Page privée — à partager depuis le menu de partage pour que le testeur y accède.</p>
+        </div>
+      </li>
+      <li><strong>Exploration OCR/vision locale</strong>
+        <p>Objectif : remplacer la dépendance à l'API Anthropic payante de « Traduire X » (<code>core/vision_ocr.py</code>) pour rendre TRANSLAX vraiment 100% local. <strong>PaddleOCR installé et testé avec succès</strong> (licence Apache 2.0, commercialisable) — script <code>ocr_prototype.py</code>. Bug rencontré et corrigé : PaddlePaddle 3.3.1 plante à l'inférence CPU avec oneDNN activé par défaut → fix <code>enable_mkldnn=False</code>. Comparatif complet (licences, VLM candidats : Qwen2.5-VL, GOT-OCR2.0, InternVL, MiniCPM-V) dans <code>OCR_VLM_COMPARATIF.md</code>. <strong>Pas encore intégré dans l'appli.</strong></p>
+      </li>
+    </ol>
+  </section>
+
+  <section id="suite">
+    <h2><span class="n">04</span><span>Prochaines pistes possibles</span></h2>
+    <ul class="next">
+      <li>Intégrer PaddleOCR (et/ou un VLM local) dans <code>core/vision_ocr.py</code>.</li>
+      <li>Attendre le retour du test de vitesse sur l'Acer Nitro (RTX).</li>
+      <li>Continuer à traduire d'autres livres via <code>PROMPT_TRADUCTION.md</code>.</li>
+    </ul>
+  </section>
+
+  <footer>TRANSLAX — note de contexte, usage privé</footer>
+</div>

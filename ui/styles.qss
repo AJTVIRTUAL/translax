@@ -1,0 +1,413 @@
+/* TRANSLAX — thème sombre.
+   Feuille de style Qt (sous-ensemble de CSS : pas d'ombres, pas de
+   transitions, pas de flexbox — la mise en page vient des layouts Python). */
+
+QWidget {
+    background-color: #12151c;
+    color: #e6eaf2;
+    font-family: "Segoe UI", "Inter", sans-serif;
+    font-size: 13px;
+}
+
+/* Sans ça, chaque QLabel/QCheckBox hérite du fond de QWidget et dessine une
+   bande visible à l'intérieur des cartes. */
+QLabel, QCheckBox {
+    background: transparent;
+}
+
+QLabel#appTitle {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: #ffffff;
+}
+
+QLabel#appSubtitle {
+    color: #8b96a8;
+    font-size: 13px;
+    padding-bottom: 4px;
+}
+
+QFrame#card {
+    background-color: #1a1f2a;
+    border: 1px solid #262d3a;
+    border-radius: 0px;
+}
+
+QLabel#cardTitle {
+    color: #8b96a8;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}
+
+/* --- Barre de titre (remplace la barre native Windows) ----------------- */
+
+QWidget#titleBar {
+    background-color: #0d1117;
+    border-bottom: 1px solid #1c222c;
+}
+
+QLabel#titleBarText {
+    color: #8b96a8;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 1px;
+}
+
+/* object name plutôt que le type QPushButton seul : la spécificité l'emporte
+   sur la règle générale QPushButton plus bas dans ce fichier (fond, bordure,
+   coins arrondis, padding) -- ces boutons doivent rester à vif, carrés,
+   collés au bord de la fenêtre, comme sur une vraie barre de titre. */
+QPushButton#titleBarButton,
+QPushButton#titleBarClose {
+    background-color: transparent;
+    border: none;
+    border-radius: 0px;
+    padding: 0px;
+}
+
+QPushButton#titleBarButton:hover {
+    background-color: #232b38;
+}
+
+QPushButton#titleBarButton:pressed {
+    background-color: #2b3543;
+}
+
+QPushButton#titleBarClose:hover {
+    background-color: #e5484d;
+}
+
+QPushButton#titleBarClose:pressed {
+    background-color: #c93a3e;
+}
+
+/* --- Zone de dépôt ---------------------------------------------------- */
+
+QFrame#dropZone {
+    background-color: #161b24;
+    border: 2px dashed #333c4d;
+    border-radius: 0px;
+}
+
+QFrame#dropZone[hover="true"] {
+    border-color: #4f8cff;
+    background-color: #18243a;
+}
+
+QFrame#dropZone[filled="true"] {
+    border-style: solid;
+    border-color: #2f5fa8;
+    background-color: #171d29;
+}
+
+QLabel#fileName {
+    font-size: 15px;
+    font-weight: 600;
+    color: #e6eaf2;
+    background: transparent;
+}
+
+QLabel#fileDetails {
+    color: #7d879a;
+    font-size: 12px;
+    background: transparent;
+}
+
+/* --- Champs ----------------------------------------------------------- */
+
+QComboBox, QLineEdit {
+    background-color: #10141b;
+    border: 1px solid #2b3444;
+    border-radius: 0px;
+    padding: 7px 10px;
+    selection-background-color: #4f8cff;
+}
+
+QComboBox:hover, QLineEdit:hover {
+    border-color: #3b4759;
+}
+
+QComboBox:disabled, QLineEdit:disabled {
+    color: #5b6474;
+    background-color: #141821;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #1a1f2a;
+    border: 1px solid #2b3444;
+    selection-background-color: #4f8cff;
+    outline: none;
+}
+
+QPushButton#swapLangButton {
+    color: #4f8cff;
+    font-size: 15px;
+    font-weight: 700;
+    background-color: #10141b;
+    border: 1px solid #232b38;
+    border-radius: 0px;
+    padding: 0px;
+}
+
+QPushButton#swapLangButton:hover {
+    background-color: #1a1f2a;
+    border: 1px solid #4f8cff;
+}
+
+QPushButton#swapLangButton:pressed {
+    background-color: #4f8cff;
+    color: #ffffff;
+}
+
+QPushButton#swapLangButton:disabled {
+    color: #4a5468;
+    border: 1px solid #1a1f2a;
+    background-color: #10141b;
+}
+
+QLabel#outputPreview {
+    color: #9aa5b7;
+    padding: 8px 10px;
+    background-color: #10141b;
+    border: 1px solid #232b38;
+    border-radius: 0px;
+}
+
+/* Rappel anti-veille : visible seulement pendant la traduction (voir
+   MainWindow._set_running). Teinte légèrement bleutée pour se distinguer
+   d'un simple message de statut, sans être alarmant. */
+QLabel#keepAwake {
+    color: #7db8e8;
+    background-color: #10192a;
+    border: 1px solid #1f3a5c;
+    border-radius: 0px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+QCheckBox {
+    spacing: 8px;
+    color: #c3ccdb;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #3b4759;
+    border-radius: 0px;
+    background-color: #10141b;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #4f8cff;
+    border-color: #4f8cff;
+}
+
+/* --- Boutons ---------------------------------------------------------- */
+
+QPushButton {
+    background-color: #232b38;
+    border: 1px solid #313b4b;
+    border-radius: 0px;
+    padding: 8px 16px;
+    color: #dbe2ee;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background-color: #2b3543;
+    border-color: #3d4959;
+}
+
+QPushButton:pressed {
+    background-color: #1e2531;
+}
+
+QPushButton:disabled {
+    background-color: #191e27;
+    border-color: #242c39;
+    color: #545d6d;
+}
+
+QPushButton#primary {
+    background-color: #3b7dfb;
+    border: none;
+    color: #ffffff;
+    padding: 12px 20px;
+    font-size: 14px;
+}
+
+QPushButton#primary:hover {
+    background-color: #4f8cff;
+}
+
+QPushButton#primary:pressed {
+    background-color: #2f6ad8;
+}
+
+QPushButton#primary:disabled {
+    background-color: #22334f;
+    color: #6b7a94;
+}
+
+QPushButton#danger {
+    background-color: #2a1d20;
+    border: 1px solid #5c2f2f;
+    color: #ec6a63;
+    padding: 12px 20px;
+    font-size: 14px;
+}
+
+QPushButton#danger:hover {
+    background-color: #3a2427;
+    border-color: #7c3a38;
+}
+
+QPushButton#danger:disabled {
+    background-color: #191e27;
+    border-color: #242c39;
+    color: #545d6d;
+}
+
+QPushButton#pauseButton {
+    background-color: #1b2a1f;
+    border: 1px solid #3a6b45;
+    color: #7fdb8f;
+    padding: 12px 20px;
+    font-size: 14px;
+}
+
+QPushButton#pauseButton:hover {
+    background-color: #24382a;
+    border-color: #4c8a5a;
+}
+
+QPushButton#pauseButton:pressed {
+    background-color: #16211a;
+}
+
+QPushButton#pauseButton:disabled {
+    background-color: #191e27;
+    border-color: #242c39;
+    color: #545d6d;
+}
+
+/* --- Hall d'accueil ----------------------------------------------------- */
+
+QPushButton#hubButton {
+    background-color: #1a1f2a;
+    border: 1px solid #2b3444;
+    color: #e6eaf2;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 14px 24px;
+    text-align: center;
+}
+
+QPushButton#hubButton:hover {
+    background-color: #202737;
+    border-color: #3b7dfb;
+}
+
+QPushButton#hubButton:pressed {
+    background-color: #171c26;
+}
+
+QPushButton#backButton {
+    background-color: transparent;
+    border: none;
+    color: #8b96a8;
+    font-weight: 600;
+    padding: 4px 8px 4px 0px;
+}
+
+QPushButton#backButton:hover {
+    color: #dbe2ee;
+    background-color: transparent;
+}
+
+QPushButton#backButton:pressed {
+    color: #4f8cff;
+}
+
+/* --- Progression ------------------------------------------------------ */
+
+QProgressBar {
+    background-color: #10141b;
+    border: 1px solid #232b38;
+    border-radius: 0px;
+    height: 16px;
+}
+
+QProgressBar::chunk {
+    border-radius: 0px;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #3b7dfb, stop:1 #59d4c4);
+}
+
+QLabel#stats {
+    color: #9aa5b7;
+    font-size: 12px;
+    padding: 2px 2px 4px 2px;
+}
+
+/* Numéro de version + date de build, tout en bas de la fenêtre -- discret
+   à dessein : petit, gris atténué, jamais plus voyant que le contenu. */
+QLabel#versionLabel {
+    color: #4a5265;
+    font-size: 10px;
+    padding: 4px 0px 2px 0px;
+}
+
+QPlainTextEdit {
+    background-color: #0d1117;
+    border: 1px solid #232b38;
+    border-radius: 0px;
+    padding: 8px;
+    color: #a8b3c4;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 12px;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical {
+    background: #2f3947;
+    border-radius: 0px;
+    min-height: 24px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #3d4959;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+/* --- Boîtes de dialogue ----------------------------------------------- */
+
+QMessageBox {
+    background-color: #1a1f2a;
+}
+
+QMessageBox QLabel {
+    color: #e6eaf2;
+}

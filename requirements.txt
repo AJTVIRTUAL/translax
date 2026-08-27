@@ -1,0 +1,46 @@
+# TRANSLAX — versions réellement installées et testées le 21/08/2026.
+# transformers est en version majeure 5 : ne pas laisser flotter, une montée
+# de branche casserait l'application packagée.
+
+torch==2.6.0
+transformers==5.15.1
+sentencepiece==0.2.1
+huggingface_hub==1.28.0
+PySide6==6.11.2
+pymupdf==1.28.2
+
+# Traduire X uniquement (extraction OCR, voir core/vision_ocr.py) --
+# importés à la volée seulement quand ce bouton est utilisé : Traduire reste
+# utilisable même si un problème empêchait ces paquets de s'installer.
+#
+# PaddleOCR : moteur PAR DÉFAUT de Traduire X depuis le 25/08/2026 (licence
+# Apache 2.0, gratuit, 100% local -- objectif : ne plus dépendre d'une API
+# payante pour que TRANSLAX reste local de bout en bout, voir
+# OCR_VLM_COMPARATIF.md). enable_mkldnn=False obligatoire au premier appel
+# (core/vision_ocr.py) -- sans ce réglage, paddlepaddle==3.3.1 plante à
+# l'inférence CPU sur cette machine, vérifié réellement.
+paddleocr==3.7.0
+paddlepaddle==3.3.1
+#
+# Anthropic (Claude) : option payante de Traduire X, seulement si la case
+# « Utiliser Claude » est cochée -- meilleure compréhension du contexte sur
+# les cas très difficiles, nécessite une clé API et une connexion internet.
+anthropic==1.0.0
+httpx2==2.12.0
+
+# Packaging uniquement (inutile pour lancer l'app depuis les sources)
+pyinstaller==6.22.2
+
+# Moteur « Turbo » (600M-ct2, voir core/translate.py::FastEngine) -- importé
+# à la volée seulement quand ce profil est choisi, comme anthropic/httpx2
+# ci-dessus. Mesuré sur cette machine : 13,2× plus rapide que le moteur
+# « Précis » sur une phrase de référence, sortie quasi identique.
+ctranslate2==4.8.1
+
+# Moteur « OPUS-MT » (Helsinki-NLP, voir core/translate.py::OpusMtEngine) --
+# licence CC-BY 4.0, seul moteur de TRANSLAX dont l'usage commercial est
+# autorisé (NLLB et son moteur Turbo restent CC-BY-NC, gardés uniquement
+# pour l'usage personnel de l'auteur -- voir SPEC.md). sacremoses est
+# "recommended" par le tokenizer Marian : sans lui, tout fonctionne déjà
+# (vérifié), mais un avertissement s'affiche à chaque chargement.
+sacremoses==0.2.0
