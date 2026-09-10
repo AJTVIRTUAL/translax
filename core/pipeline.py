@@ -34,7 +34,18 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import extract, page_cleanup, pdf_export, postprocess, segment as segment_mod, state as state_mod, translate, vision_ocr
+from . import (
+    document_flow,
+    extract,
+    layout as layout_mod,
+    page_cleanup,
+    pdf_export,
+    postprocess,
+    segment as segment_mod,
+    state as state_mod,
+    translate,
+    vision_ocr,
+)
 from .languages import DEFAULT_SOURCE, DEFAULT_TARGET
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -84,6 +95,7 @@ class Result:
     cancelled: bool = False
     cleanup_report: postprocess.CleanupReport | None = None
     page_cleanup_report: page_cleanup.PageCleanupReport | None = None
+    layout_report: "layout_mod.LayoutReport | None" = None   # analyse de mise en page (PDF seulement)
     vision_ocr_report: vision_ocr.VisionOcrReport | None = None
     renamed_from: Path | None = None     # nom d'avant renommage, si le titre a été traduit
     pdf_path: Path | None = None         # rempli seulement si job.output_format == "pdf" (voir core/pdf_export.py)
@@ -160,6 +172,96 @@ def _unique_path(path: Path) -> Path:
         n += 1
 
 
+def _extract_with_layout(input_path: Path, status) -> tuple[str, list, object | None]:
+    """
+    Extrait un PDF en tenant compte de sa MISE EN PAGE reelle, avec repli
+    immediat sur l'extraction a plat si ca n'apporte rien.
+
+    L'analyse geometrique (`core/layout.py`) n'est employee que lorsqu'elle a
+    vraiment trouve quelque chose que l'extraction classique ne voyait pas :
+    plusieurs colonnes, ou un tableau. Sur un roman en une seule colonne, le
+    chemin historique -- eprouve sur tous les livres deja traduits par ce
+    projet -- reste donc strictement inchange, ce qui evite de faire porter a
+    des milliers de pages deja validees le risque d'un nouveau decoupage.
+
+    Retourne (texte du corps, regions a rejeter en fin de document, rapport).
+    """
+    def classic() -> tuple[str, list, object | None]:
+        return (
+            extract.extract_text(
+                input_path,
+                on_progress=lambda page, total: status(f"Extraction page {page}/{total}…"),
+            ),
+            [],
+            None,
+        )
+
+    if input_path.suffix.lower() != ".pdf":
+        return classic()
+
+    # Sonde rapide AVANT l'analyse complete : sur un livre de 300 pages, decider
+    # puis renoncer coutait jusqu'a 30 secondes pour rien (voir `probe_pdf`).
+    try:
+        if not layout_mod.is_layout_useful(layout_mod.probe_pdf(input_path)):
+            return classic()
+    except Exception as exc:  # noqa: BLE001 - une sonde ratee ne doit jamais bloquer une traduction
+        status(f"Analyse de mise en page indisponible ({exc}) — extraction classique.")
+        return classic()
+
+    try:
+        document = layout_mod.analyze_pdf(
+            input_path,
+            on_progress=lambda page, total: status(f"Analyse de la mise en page {page}/{total}…"),
+        )
+    except Exception as exc:  # noqa: BLE001 - idem : jamais bloquant
+        status(f"Analyse de mise en page indisponible ({exc}) — extraction classique.")
+        return classic()
+
+    if not layout_mod.is_layout_useful(document):
+        return classic()
+
+    for line in document.report.summary_lines():
+        status(line)
+    return document.body_text(), document.deferred_regions(), document.report
+
+
+def _deferred_segments(regions: list) -> list[dict]:
+    """
+    Transforme en segments les regions renvoyees a la fin du document.
+
+    Chaque tableau garde son titre (« ## Table 1. … ») et devient une suite de
+    lignes autonomes, une par ligne de tableau ; les notes sont regroupees
+    sous un intitule unique. L'ensemble arrive APRES tout le corps du texte,
+    ce qui est precisement le but : un tableau etale sur trois pages ne coupe
+    plus le paragraphe qui l'entoure.
+    """
+    if not regions:
+        return []
+    segments: list[dict] = []
+    tables = [r for r in regions if r.kind == "table"]
+    notes = [r for r in regions if r.kind in {"footnote", "caption"}]
+
+    if tables:
+        segments.append({"type": "heading", "text": "Tableaux"})
+        for region in tables:
+            for block in region.text.split("\n\n"):
+                block = block.strip()
+                if not block:
+                    continue
+                if block.startswith("## "):
+                    segments.append({"type": "heading", "text": block[3:].strip()})
+                else:
+                    segments.append({"type": "paragraph", "text": block})
+
+    if notes:
+        segments.append({"type": "heading", "text": "Notes et bas de page"})
+        for region in notes:
+            text = region.text.strip()
+            if text:
+                segments.append({"type": "paragraph", "text": f"(p. {region.page_number}) {text}"})
+    return segments
+
+
 def run_job(
     job: Job,
     *,
@@ -228,6 +330,7 @@ def run_job(
     page_report = None
 
     vision_report = None
+    layout_report = None
     if previous is not None and cached_segments.exists():
         segments = segment_mod.load_segments(cached_segments)
         start_index = min(previous.done, len(segments))
@@ -246,6 +349,11 @@ def run_job(
             status(f"Reprise avec un moteur différent : « {job_state.model} » -> « {job.model_key} ».")
             job_state.model = job.model_key
     else:
+        # Regions renvoyees a la fin du document (tableaux, notes). Seule
+        # l'extraction PDF a couche texte sait les reperer : l'OCR rend des
+        # lignes, pas de geometrie -- la liste reste alors vide, et tout le
+        # reste du traitement est identique.
+        deferred_regions: list = []
         if job.use_vision_ocr:
             using_local_ocr = job.vision_provider != "anthropic"
             status(
@@ -319,10 +427,9 @@ def run_job(
                 )
         else:
             status(f"Extraction du texte ({input_path.suffix.lower().lstrip('.') or 'texte'})…")
-            raw_text = extract.extract_text(
-                input_path,
-                on_progress=lambda page, total: status(f"Extraction page {page}/{total}…"),
-            )
+            raw_text, deferred_regions, layout_report = _extract_with_layout(input_path, status)
+            if layout_report is not None:
+                notes.extend(layout_report.summary_lines())
 
         # --- Nettoyage des en-têtes/pieds de page répétés et numéros ------
         cleaned_text, page_report = page_cleanup.clean_pdf_pages(raw_text)
@@ -344,6 +451,19 @@ def run_job(
                 )
         raw_text = cleaned_text if page_decision == "clean" else raw_text
 
+        # --- Remise en ordre du fil : doublons, paragraphes coupes -------
+        # S'applique aux DEUX boutons : le texte issu de l'OCR (« Traduire X »)
+        # souffre des memes coupures de page que celui d'un PDF a couche texte.
+        # `drop_repeats` suit la decision de l'utilisateur : s'il a demande le
+        # texte « original », il a choisi de garder les en-tetes et pieds de
+        # page -- les retirer ici par une autre porte irait contre ce choix.
+        raw_text, flow_report = document_flow.repair(
+            raw_text, drop_repeats=(page_decision == "clean")
+        )
+        for line in flow_report.summary_lines():
+            status(line)
+            notes.append(line)
+
         strategy = segment_mod.detect_strategy(raw_text) if job.strategy == "auto" else job.strategy
         status(
             "Segmentation : "
@@ -351,6 +471,10 @@ def run_job(
                else "texte continu, paragraphes reconstruits par phrases")
         )
         segments = segment_mod.segment_text(raw_text, strategy=strategy, target_words=job.target_words)
+        # Tableaux et notes en DERNIER, jamais a leur place d'origine : c'est
+        # ce qui evite qu'un tableau de trois pages ne vienne couper un
+        # paragraphe en deux (demande explicite de l'utilisateur, 11/09/2026).
+        segments.extend(_deferred_segments(deferred_regions))
         if job.limit:
             segments = segments[: job.limit]
 
@@ -392,6 +516,7 @@ def run_job(
             cancelled=False,
             cleanup_report=report,
             page_cleanup_report=page_report,
+            layout_report=layout_report,
             vision_ocr_report=vision_report,
             pdf_path=pdf_path,
             notes=notes,
@@ -503,6 +628,7 @@ def run_job(
         cancelled=cancelled,
         cleanup_report=report,
         page_cleanup_report=page_report,
+        layout_report=layout_report,
         vision_ocr_report=vision_report,
         renamed_from=renamed_from,
         pdf_path=pdf_path,

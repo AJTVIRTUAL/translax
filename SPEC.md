@@ -2307,6 +2307,162 @@ Propagé aux deux autres endroits qui affichaient encore l'ancien nom :
 check cherchait « AJTWS », resté au nom précédent). Rien de plus à
 construire ni tester : un changement de texte, sans logique derrière.
 
+## 5 tricies sexies. Mise en page réelle : colonnes, tableaux, paragraphes recollés (ajouté le 11/09/2026)
+
+Demande de l'utilisateur, sur un cas précis (`DRAFTS/PDF/Relation between
+Intelligence and religiosity.pdf`, article scientifique de 30 pages) :
+reconnaître les tableaux et les remettre à plat « en ligne une à la suite des
+autres tout en étant cohérent », les renvoyer à la toute fin pour qu'ils ne
+coupent plus le texte, continuer d'écarter les doublons inutiles, repérer les
+explications de bas de page, et surtout « reconnaître qu'un texte n'est pas
+fini encore, et chercher sa suite exacte en explorant les pages qui suivent ».
+
+**La cause réelle était plus profonde que le symptôme décrit.** L'exemple
+donné -- un paragraphe interrompu page 4 sur « … Only one coding » dont la
+suite (« variable (goal of study) involved a subjective judgment… ») se trouve
+page 8 -- n'était pas un simple problème de recollage. `extract.py` demandait à
+PyMuPDF le texte trié par position (`sort=True`), ce qui convient à un livre en
+UNE colonne mais mélange les DEUX colonnes d'un article scientifique sur une
+même ligne logique :
+
+    « ability. The reason is that very conservative Christians scorn
+      university entrance exams (UEEs; e.g., SAT, GRE), which are »
+
+...soit la fin d'une phrase de gauche collée au début d'une phrase de droite,
+sur toute la longueur du document. Le texte était donc illisible AVANT même
+d'être traduit, et aucune recherche de « suite » n'avait de sens tant que
+l'ordre de lecture lui-même était faux. Corriger cet ordre était le préalable à
+tout le reste.
+
+### `core/layout.py` (nouveau) -- géométrie de la page
+
+- **Ordre de lecture par découpe récursive (« XY-cut »)** : gouttière verticale
+  franche (deux colonnes) d'abord, sinon coupure horizontale (bandeau pleine
+  largeur : titre, tableau). Un titre courant sur les deux colonnes est donc lu
+  AVANT elles, et chaque colonne est lue entièrement de haut en bas.
+- **Tableaux paysage** (pages 5 à 7 de l'article) : imprimés à 90° sur une page
+  portrait, PyMuPDF les rend comme du texte pivoté (`line["dir"] == (0, -1)`).
+  Lignes et colonnes sont reconstituées par leur position réelle, sur les deux
+  axes échangés (`_TableAxes` : un seul algorithme sert aux tableaux normaux et
+  pivotés).
+- **Tableaux normaux** (Tableau 2, page 9) : reconnus AVANT toute découpe en
+  colonnes -- un tableau contient lui-même des blancs verticaux entre ses
+  colonnes et se faisait sinon couper en tranches inutilisables.
+- **Remise à plat étiquetée** : chaque ligne devient une phrase autonome,
+  « Study : Bender (1968) ; Total n : 96 ; Intelligence measure : UEE and
+  GPA ; … ». Lue telle quelle (« Bender (1968) 96 1.0 UEE and GPA »), une ligne
+  de tableau ne veut rien dire une fois traduite ; étiquetée, elle redevient
+  traduisible et lisible.
+- **Notes de bas de page** : taille de corps nettement plus petite ET position
+  basse -- deux signaux conjoints, jamais un seul.
+
+Trois pièges réels ont été trouvés en construisant ce module, chacun corrigé
+sur mesure plutôt que par un réglage approximatif :
+
+1. **Colonnes fantômes.** Un en-tête long (« Intelligence measure ») ne
+   commence pas au même endroit que les données de sa propre colonne (« UEE and
+   GPA »), parce qu'il est composé sur deux lignes : le regroupement par simple
+   proximité créait 11 colonnes là où il n'y en a que 9, et les données se
+   retrouvaient sans étiquette. Corrigé en ne retenant que les positions
+   confirmées par une large part des lignes (`_column_centers`) : une vraie
+   colonne est alimentée par 28 à 30 lignes sur 30, une position d'en-tête
+   isolée par une ou deux.
+2. **Lignes coupées en deux.** Un nom d'étude trop long (« Carothers,
+   Borkowski, Burke / Lefever, and Whitman (2005); S. S. Carothers, personal
+   communication, / September 2011 ») produisait des lignes fantômes
+   (« Study : (2008) »). Recollées colonne par colonne (`_merge_wrapped_rows`),
+   en distinguant une SUITE d'un INTITULÉ DE GROUPE grâce à deux signaux
+   typographiques réels du document : le deux-points final
+   (« Blanchard-Fields… October 2011: ») ou l'indentation cadratin (U+2003) de
+   la ligne suivante (« Symington (1935) », suivi de « ⟶ Study 1 »).
+3. **Pages de livre scanné prises pour des tableaux.** L'OCR d'un livre ancien
+   produit des fragments courts et épars qui imitent la géométrie d'un tableau :
+   12 des 24 pages échantillonnées de `A new era of thought.pdf` étaient ainsi
+   détectées à tort. Le départage se fait sur la part de cellules à dominante
+   chiffrée (`_numeric_share`), mesurée sur les documents réels : **0,35 à 0,72
+   pour les vrais tableaux, 0,01 à 0,07 pour les pages scannées**. Contrepartie
+   assumée : un tableau purement textuel restera traité comme du texte courant
+   -- il se lit encore, alors qu'une page de roman découpée en fausses lignes de
+   tableau serait illisible.
+
+### `core/document_flow.py` (nouveau) -- le fil du texte
+
+Travaille sur du TEXTE seul, donc s'applique aux **deux boutons** : « Traduire »
+comme « Traduire X » (l'OCR souffre exactement des mêmes coupures de page).
+
+- **Recollage d'un paragraphe coupé** (`stitch_pages`), en enjambant ce qui
+  s'intercale. Deux garde-fous pour ne jamais recoller à tort : la première
+  moitié doit vraiment s'arrêter en pleine phrase (un titre court sans point
+  final n'est pas un paragraphe inachevé), et la seconde doit vraiment
+  ressembler à une reprise (minuscule initiale, dans l'immense majorité des
+  cas). Une césure finale (« … highly intelli- ») tranche à elle seule, avant
+  même le garde-fou de longueur. Ce qui peut être enjambé est étroitement
+  défini (`_is_skippable`) : débris, note, titre court, ligne de tableau. Toute
+  vraie phrase arrête la recherche -- enjamber un vrai paragraphe reviendrait à
+  réordonner le document.
+- **Répétitions inutiles** (`drop_repeated_lines`), complément volontairement
+  DIFFÉRENT de `page_cleanup.py` : celui-ci regarde la POSITION et exige une
+  ligne d'au plus 6 mots ; celui-là regarde la FRÉQUENCE et ignore la longueur.
+  C'est ce qui lui permet d'attraper « Downloaded from pdf.highwire.org by
+  guest on August 12, 2013 » (9 mots, présent sur les 30 pages), que l'autre
+  laissait passer.
+- **Notes repérées sur signal textuel** (`looks_like_footnote_text`), pour les
+  sources sans géométrie (OCR, `.txt`).
+
+Deux régressions réelles ont été rencontrées ici, et sont désormais couvertes
+par des tests explicitement identifiés comme telles dans
+`tests/test_document_flow.py` :
+
+- **Neutraliser les chiffres avant de comparer** (« page 4 » et « page 5 »
+  ramenés à « page # ») paraissait plus malin et détruisait du vrai contenu :
+  cinq paragraphes ne différant que par un chiffre passaient pour cinq copies
+  d'une même ligne et disparaissaient tous les cinq. Les chiffres sont
+  désormais conservés ; seules les répétitions STRICTEMENT identiques sont
+  visées.
+- **Recoller les pages avec « \f » seul** supprimait la ligne vide de fin de
+  page. `segment.py` remplaçant ensuite « \f » par un simple retour à la ligne,
+  les paragraphes n'en formaient plus qu'un seul, géant (5 paragraphes réduits
+  à 1 dans un test du projet). Le recollage utilise donc « \n\f ».
+
+### Bascule prudente : les livres déjà validés ne changent pas de chemin
+
+`is_layout_useful` + `probe_pdf` décident si l'analyse géométrique doit
+REMPLACER l'extraction classique. Le premier seuil essayé (« au moins une page
+à deux colonnes ») faisait basculer des livres entiers sur le nouveau chemin
+pour 2 pages sur 278 -- en l'occurrence une page de titre et une table des
+matières. Vérifié sur la bibliothèque réelle de l'utilisateur (19 PDF), le
+seuil retenu (40 % de pages en colonnes, ou des tableaux sur 20 % des pages)
+donne le comportement voulu :
+
+- **18 livres sur 19 restent sur le chemin historique**, strictement inchangé ;
+- seul l'article scientifique visé bascule sur l'analyse de mise en page.
+
+`probe_pdf` échantillonne 24 pages avant de décider : sans cette sonde, un
+livre de 300 pages payait jusqu'à 30 secondes d'analyse complète avant qu'on ne
+renonce à s'en servir. Le coût est ramené à 0,1 à 0,4 seconde pour la quasi-
+totalité de la bibliothèque.
+
+Toute erreur d'analyse (`analyze_pdf` comme `probe_pdf`) retombe silencieusement
+sur l'extraction classique plutôt que de faire échouer une traduction.
+
+### Résultat sur le document visé
+
+Sur `Relation between Intelligence and religiosity.pdf` (30 pages) :
+
+- 30 pages sur 30 remises dans le bon ordre de lecture, colonne par colonne ;
+- 10 tableaux détectés (148 lignes), remis à plat et déplacés à la fin ;
+- 19 notes conservées, **27 doublons écartés** (le filigrane de dépôt) ;
+- 25 paragraphes coupés entre deux pages recollés avec leur suite -- dont
+  précisément celui de l'exemple, qui se lit désormais d'un seul tenant :
+  « … recoded all study attributes. **Only one coding variable (goal of study)
+  involved a subjective judgment, and the two discrepancies for this variable
+  were resolved by discussion.** Discrepancies in either the computation of
+  effect sizes… » ;
+- plus une seule ligne de tableau ni un seul filigrane dans le corps du texte.
+
+Tout est remonté à l'utilisateur (`Result.notes`, `Result.layout_report`) :
+aucune de ces transformations n'est silencieuse.
+
 ## 6. Interface
 
 ```
