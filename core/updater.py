@@ -161,26 +161,26 @@ def download_installer(
 def launch_installer_and_quit(installer_path: Path) -> None:
     """
     Lance l'installeur téléchargé en arrière-plan, en mode silencieux avec
-    relance automatique (voir `installer/translax.iss` : entrée `[Run]`
-    `postinstall` SANS `skipifsilent`, `CloseApplications`/
-    `RestartApplications` activés) -- puis NE FAIT RIEN D'AUTRE.
+    relance automatique (voir `installer_app/main.py` -- `--silent` :
+    aucune page à cliquer, TRANSLAX se relance tout seul une fois
+    l'installation terminée) -- puis NE FAIT RIEN D'AUTRE.
+
+    L'installeur lui-même reste l'ancien exécutable Inno Setup
+    (`/SILENT ...`) jusqu'à la version 1.20.0 ; à partir de la 1.21.0,
+    c'est l'installeur codé pour ce projet (voir `installer_app/`, demande
+    explicite de l'utilisateur, 11/09/2026 : « pas celui natif de
+    Windows »), qui comprend aussi ces anciens indicateurs par
+    compatibilité (voir `installer_app/main.py::_normalize_legacy_argv`) --
+    au cas où une mise à jour serait un jour resservie DEPUIS une version
+    plus ancienne que celle-ci vers une version encore plus ancienne.
 
     C'est à l'APPELANT (l'interface) de fermer TRANSLAX immédiatement
     après cet appel : le fichier .exe en cours d'exécution reste verrouillé
     par Windows tant que ce processus tourne, l'installeur ne peut le
-    remplacer qu'une fois TRANSLAX réellement terminé. `/CLOSEAPPLICATIONS`
-    reste une sécurité supplémentaire (utile si l'appelant ne se fermait
-    pas assez vite, ou si une AUTRE instance de TRANSLAX tournait), pas le
+    remplacer qu'une fois TRANSLAX réellement terminé.
+    `close_running_translax` (voir `installer_app/operations.py`) reste
+    une sécurité supplémentaire (utile si l'appelant ne se fermait pas
+    assez vite, ou si une AUTRE instance de TRANSLAX tournait), pas le
     mécanisme principal.
     """
-    subprocess.Popen(
-        [
-            str(installer_path),
-            "/SILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/CLOSEAPPLICATIONS",
-            "/NOCANCEL",
-        ],
-        close_fds=True,
-    )
+    subprocess.Popen([str(installer_path), "--silent"], close_fds=True)

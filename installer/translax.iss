@@ -1,3 +1,10 @@
+; SUPERSÉDÉ le 11/09/2026 -- plus utilisé par scripts/build_installer.py,
+; qui construit maintenant un installeur entièrement codé pour ce projet
+; (voir installer_app/), demande explicite de l'utilisateur : "pas celui
+; natif de Windows, codé tout par [nous]". Laissé dans le dépôt pour
+; mémoire (Inno Setup 6 reste nécessaire pour reconstruire CE fichier
+; précis, s'il devait resservir un jour), plus invoqué automatiquement.
+;
 ; Installeur Windows de TRANSLAX (Inno Setup 6) -- demande explicite de
 ; l'utilisateur, 26/08/2026 : "un installateur multi-étape simple mais
 ; nécessaire à ce que chacun puisse avoir ça sur leur machine".

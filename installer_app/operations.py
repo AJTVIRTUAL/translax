@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import winreg
 from dataclasses import dataclass
@@ -288,8 +289,15 @@ def register_uninstall_entry(version: str, install_dir: Path, icon_path: Path, u
         s("Publisher", PUBLISHER)
         s("DisplayIcon", str(icon_path))
         s("InstallLocation", str(install_dir))
-        s("UninstallString", f'"{uninstall_exe}"')
-        s("QuietUninstallString", f'"{uninstall_exe}" --silent')
+        # --uninstall est INDISPENSABLE ici : TRANSLAX-Uninstall.exe partage
+        # son code (installer_app/main.py) avec le Setup, et ne sait laquelle
+        # des deux choses faire qu'en lisant cet argument -- un vrai bug
+        # rencontré en testant ceci pour de vrai : sans lui, "Désinstaller"
+        # depuis Windows tentait une INSTALLATION (le seul comportement par
+        # défaut de main.py), qui échouait aussitôt faute de payload
+        # embarqué dans ce petit exécutable-là.
+        s("UninstallString", f'"{uninstall_exe}" --uninstall')
+        s("QuietUninstallString", f'"{uninstall_exe}" --uninstall --silent')
         winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
         winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
         size_kb = 0
@@ -350,10 +358,30 @@ def remove_directory_deferred(install_dir: Path) -> None:
     brièvement que ce processus-ci se termine (`ping` vers la boucle
     locale, façon universelle de patienter sans dépendre d'un terminal
     interactif -- contrairement à `timeout`), puis supprime le dossier.
+
+    Passe par un vrai petit SCRIPT .bat temporaire plutôt qu'une ligne
+    `cmd /c "a & b"` construite à la main -- constaté réellement en testant
+    ceci : `subprocess.Popen(["cmd.exe", "/c", commande])` ré-échappe la
+    commande via `list2cmdline`, et les guillemets d'un chemin (déjà lui-
+    même entre guillemets pour tolérer les espaces) entrent en conflit avec
+    ceux ajoutés autour de la commande entière -- cmd.exe refusait alors
+    tout, avec « la syntaxe du nom de fichier... est incorrecte », et NE
+    SUPPRIMAIT RIEN. Un fichier .bat n'a pas ce problème : chaque ligne est
+    lue par cmd.exe directement, sans ré-échappement Python entre les deux.
+    Le script écrit dans %TEMP% (jamais dans `install_dir` lui-même,
+    sans quoi il tenterait de se supprimer avant d'avoir fini) et se
+    supprime lui-même une fois le ménage terminé (`del "%~f0"`).
     """
-    command = f'ping -n 2 127.0.0.1 >nul & rmdir /s /q "{install_dir}"'
+    script_path = Path(tempfile.gettempdir()) / f"translax_uninstall_{os.getpid()}.bat"
+    script_path.write_text(
+        "@echo off\r\n"
+        "ping -n 2 127.0.0.1 >nul\r\n"
+        f'rmdir /s /q "{install_dir}"\r\n'
+        'del "%~f0"\r\n',
+        encoding="utf-8",
+    )
     subprocess.Popen(
-        ["cmd.exe", "/c", command],
+        ["cmd.exe", "/c", str(script_path)],
         creationflags=subprocess.CREATE_NO_WINDOW,
         close_fds=True,
     )

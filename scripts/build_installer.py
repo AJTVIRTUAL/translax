@@ -1,94 +1,89 @@
 """
-Construit l'installeur Windows de TRANSLAX (Inno Setup) -- demande
-explicite de l'utilisateur, 26/08/2026 : « un installateur multi-étape
-simple mais nécessaire à ce que chacun puisse avoir ça sur leur machine ».
+Construit l'installeur Windows de TRANSLAX -- entièrement codé pour ce
+projet (PySide6, voir `installer_app/`), pas la fenêtre native de
+Windows -- demande explicite de l'utilisateur (11/09/2026). Remplace la
+version précédente de ce script, qui invoquait Inno Setup (ISCC.exe) ;
+`installer/translax.iss` reste dans le dépôt pour mémoire, mais n'est
+plus utilisé.
 
-Lit la version depuis core/version.py (une seule source de vérité,
-jamais recopiée à la main dans installer/translax.iss) et invoque
-ISCC.exe (Inno Setup 6) avec cette version en paramètre de préprocesseur.
+Deux exécutables construits dans le bon ordre, chacun avec son propre
+fichier `.spec` :
+  1. `TRANSLAX-Uninstall.exe` (uninstaller_app.spec) -- SANS le payload
+     de l'application, juste la mécanique de désinstallation ;
+  2. `TRANSLAX-Setup-{VERSION}.exe` (installer_app.spec) -- embarque
+     `dist/TRANSLAX.exe` ET le désinstalleur construit à l'étape 1 comme
+     données, pour pouvoir copier ce dernier dans le dossier
+     d'installation au moment de l'installation.
 
-Ne construit PAS l'exe lui-même : suppose `dist/TRANSLAX.exe` déjà
-construit et à jour via `pyinstaller TRANSLAX.spec` (voir
-scripts/stamp_build_date.py pour la version + le build de l'exe) --
-vérifié explicitement avant d'appeler Inno Setup, jamais empaqueté un
-exe périmé ou manquant en silence.
+Lit la version depuis `core/version.py` (une seule source de vérité) et
+l'écrit dans `installer_app/version.txt` juste avant chaque build --
+c'est ce fichier, embarqué comme donnée par les deux `.spec`, que
+`installer_app/operations.py::bundled_version()` relit une fois gelé.
 
-Nécessite Inno Setup 6 installé (ISCC.exe) : https://jrsoftware.org/isdl.php
+Ne construit PAS `dist/TRANSLAX.exe` lui-même : suppose l'exe principal
+déjà construit et à jour via `pyinstaller TRANSLAX.spec` (voir
+`scripts/stamp_build_date.py` pour la version + le build de l'exe) --
+vérifié explicitement avant de continuer, jamais empaqueté un exe périmé
+ou manquant en silence.
 
     python scripts/build_installer.py
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.version import VERSION  # noqa: E402
-import build_installer_images  # noqa: E402
-
-# Emplacements standards de l'installeur Inno Setup 6 sur Windows --
-# testés avant de retomber sur une recherche dans le PATH (utile si
-# installé ailleurs qu'aux chemins par défaut).
-ISCC_CANDIDATES = [
-    Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
-    Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
-]
 
 
-def find_iscc() -> Path:
-    for candidate in ISCC_CANDIDATES:
-        if candidate.exists():
-            return candidate
-    found = shutil.which("ISCC.exe") or shutil.which("iscc")
-    if found:
-        return Path(found)
-    raise SystemExit(
-        "ISCC.exe introuvable -- Inno Setup 6 doit être installé "
-        "(https://jrsoftware.org/isdl.php)."
-    )
+def _run_pyinstaller(spec_name: str) -> None:
+    cmd = [sys.executable, "-m", "PyInstaller", spec_name, "--noconfirm"]
+    print("Construction :", " ".join(cmd))
+    result = subprocess.run(cmd, cwd=str(ROOT))
+    if result.returncode != 0:
+        raise SystemExit(f"ERREUR : PyInstaller a échoué sur {spec_name} (code {result.returncode}).")
 
 
 def main() -> int:
     exe_path = ROOT / "dist" / "TRANSLAX.exe"
     if not exe_path.exists():
         print(
-            f"ERREUR : {exe_path} n'existe pas -- construis d'abord l'exe "
+            f"ERREUR : {exe_path} n'existe pas -- construis d'abord l'exe principal "
             "(python -m PyInstaller TRANSLAX.spec) avant l'installeur."
         )
         return 1
 
-    # Régénérées à chaque build, pas seulement au premier jet -- coût
-    # négligeable (quelques dixièmes de seconde), et garantit que le logo
-    # de l'installeur ne se retrouve jamais périmé par rapport à
-    # ui/icon.ico si celui-ci change un jour.
-    build_installer_images.main()
+    # Régénéré à chaque build, jamais recopié à la main dans installer_app/ :
+    # les deux .spec l'embarquent comme donnée, relue par
+    # operations.bundled_version() une fois gelé.
+    (ROOT / "installer_app" / "version.txt").write_text(VERSION, encoding="utf-8")
 
-    iscc = find_iscc()
-    iss_script = ROOT / "installer" / "translax.iss"
+    print("=== 1. Désinstalleur (TRANSLAX-Uninstall.exe, sans le payload) ===")
+    _run_pyinstaller("uninstaller_app.spec")
+    uninstaller_path = ROOT / "dist" / "TRANSLAX-Uninstall.exe"
+    if not uninstaller_path.exists():
+        print(f"ERREUR : {uninstaller_path} attendu mais introuvable après la construction.")
+        return 1
+
+    print("\n=== 2. Installeur (TRANSLAX-Setup, avec le payload + le désinstalleur) ===")
+    _run_pyinstaller("installer_app.spec")
+
+    raw_setup_path = ROOT / "dist" / "TRANSLAX-Setup.exe"
+    if not raw_setup_path.exists():
+        print(f"ERREUR : {raw_setup_path} attendu mais introuvable après la construction.")
+        return 1
+
     output_dir = ROOT / "dist_installer"
     output_dir.mkdir(exist_ok=True)
+    versioned_path = output_dir / f"TRANSLAX-Setup-{VERSION}.exe"
+    versioned_path.write_bytes(raw_setup_path.read_bytes())
 
-    cmd = [str(iscc), f"/DMyAppVersion={VERSION}", str(iss_script)]
-    print("Construction de l'installeur :", " ".join(cmd))
-    result = subprocess.run(cmd, cwd=str(ROOT / "installer"))
-    if result.returncode != 0:
-        print(f"ERREUR : ISCC.exe a échoué (code {result.returncode}).")
-        return result.returncode
-
-    produced = output_dir / f"TRANSLAX-Setup-{VERSION}.exe"
-    if produced.exists():
-        size_mo = produced.stat().st_size / 1024 / 1024
-        print(f"Installeur créé : {produced} ({size_mo:.1f} Mo)")
-    else:
-        print(
-            f"Attention : {produced} attendu mais introuvable -- vérifie "
-            "OutputDir/OutputBaseFilename dans installer/translax.iss."
-        )
+    size_mo = versioned_path.stat().st_size / 1024 / 1024
+    print(f"\nInstalleur créé : {versioned_path} ({size_mo:.1f} Mo)")
     return 0
 
 

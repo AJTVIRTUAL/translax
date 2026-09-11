@@ -1,15 +1,18 @@
 """
-Génère les images de personnalisation de l'installeur Windows (Inno
-Setup) -- demande explicite de l'utilisateur, 27/08/2026 : « styliser...
-et le personnaliser au maximum... afin de se sentir immergé dans
-l'application/logiciel ». Réutilise la palette et le logo de TRANSLAX
-(fond sombre, accent bleu -- voir ui/styles.qss) plutôt que les images
-grises par défaut d'Inno Setup.
+SUPERSÉDÉ le 11/09/2026 -- ne fait plus partie de la construction de
+l'installeur (voir `scripts/build_installer.py`, qui ne l'appelle plus).
 
-Utilise Qt (déjà une dépendance du projet) pour dessiner, pas Pillow --
-une dépendance de moins à gérer. Produit deux fichiers `.bmp` (format
-exigé par Inno Setup) directement dans `installer/`, référencés tels
-quels par `installer/translax.iss` (`WizardImageFile`/`WizardSmallImageFile`).
+Générait les images de personnalisation de l'ANCIEN installeur Windows
+(Inno Setup, `installer/translax.iss`) -- demande explicite de
+l'utilisateur, 27/08/2026 : « styliser... et le personnaliser au
+maximum... afin de se sentir immergé dans l'application/logiciel ».
+Remplacé par un installeur entièrement codé pour ce projet (voir
+`installer_app/`, demande explicite de l'utilisateur, 11/09/2026 : « pas
+celui natif de Windows ») -- il n'y a plus de fenêtre Inno Setup à habiller
+d'images, la fenêtre ELLE-MÊME est maintenant celle de TRANSLAX.
+
+Laissé dans le dépôt pour mémoire (et si `installer/translax.iss` devait
+resservir un jour), pas relancé automatiquement.
 
     python scripts/build_installer_images.py
 """

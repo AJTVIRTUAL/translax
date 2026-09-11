@@ -2463,6 +2463,150 @@ Sur `Relation between Intelligence and religiosity.pdf` (30 pages) :
 Tout est remonté à l'utilisateur (`Result.notes`, `Result.layout_report`) :
 aucune de ces transformations n'est silencieuse.
 
+## 5 tricies septies. Installeur entièrement custom (PySide6), remplace Inno Setup (ajouté le 11/09/2026)
+
+Demande explicite de l'utilisateur : « je veux que tu personnalise
+entièrement la fenêtre qui gère le setup (installeur), je veux pas que ce
+soit celui natif de Windows, je veux que ce soit codé tout par [nous] ».
+L'installeur Inno Setup (§5 tricies, tricies unus), même personnalisé avec
+des images de bienvenue aux couleurs de TRANSLAX, restait une fenêtre
+Windows classique -- barre de titre native, boutons système, coins
+arrondis gris. Ce correctif remplace la fenêtre elle-même, pas seulement
+son habillage.
+
+### `installer_app/` (nouveau paquet) -- l'identité visuelle de TRANSLAX, pas celle de Windows
+
+Réutilise RÉELLEMENT `ui/titlebar.py` (barre de titre custom déjà
+construite et éprouvée pour l'application principale, pas une copie) et
+les vraies couleurs de `ui/styles.qss` (recopiées en dur dans
+`installer_app/theme.py`, pour ne jamais dépendre d'un fichier de
+l'application principale au moment de l'exécution) : thème sombre, accent
+bleu (`#3b7dfb`), coins carrés partout, même police. Fenêtre à taille
+fixe (560×460, un installeur ne se redimensionne pas -- convention
+standard, y compris chez l'ancien installeur Inno Setup), centrée
+explicitement sur l'écran du CURSEUR au démarrage.
+
+- `theme.py` : palette + feuille de style Qt.
+- `operations.py` : toute la mécanique réelle qui touche au disque, au
+  registre ou à des processus -- copie de fichiers PAR BLOCS avec
+  progression réelle (le payload fait ~500 Mo), raccourcis via PowerShell +
+  `WScript.Shell` (AUCUNE dépendance Python de plus, contrairement à
+  `pywin32` : `powershell.exe` existe nativement sur tout Windows pris en
+  charge), entrée de registre `HKCU\...\Uninstall\TRANSLAX` (ce projet
+  choisit son propre nom de clé, plus de GUID Inno à reproduire), fermeture
+  d'une instance de TRANSLAX en cours si besoin (filet de sécurité, la
+  fermeture principale reste la responsabilité de l'appelant -- voir
+  `ui/main_window.py::_on_update_downloaded`, inchangé).
+- `ui.py` : les fenêtres (`SetupWindow` : Bienvenue -> Progression -> Fin ;
+  `UninstallWindow` : Confirmation -> Progression -> Fin), chacune sur un
+  `QThread` séparé pour ne jamais geler l'interface pendant la copie.
+- `main.py` : point d'entrée, quatre modes selon les arguments
+  (installation interactive / `--silent` pour la mise à jour intégrée /
+  `--uninstall` / `--uninstall --silent` pour `QuietUninstallString`).
+
+### Deux exécutables, un seul code source
+
+- `TRANSLAX-Uninstall.exe` (`uninstaller_app.spec`) -- SANS le payload de
+  l'application (~48 Mo seulement, PySide6 + la mécanique de
+  désinstallation), copié dans le dossier d'installation PAR le Setup et
+  référencé comme `UninstallString` dans le registre. Vit dans `{app}`,
+  comme l'ancien `unins000.exe` d'Inno Setup.
+- `TRANSLAX-Setup-{VERSION}.exe` (`installer_app.spec`) -- embarque
+  `dist/TRANSLAX.exe` (le vrai payload) ET le désinstalleur ci-dessus
+  comme DONNÉES PyInstaller, construit dans cet ordre précis
+  (`scripts/build_installer.py`, réécrit pour ne plus appeler Inno Setup
+  du tout -- `installer/translax.iss` reste dans le dépôt pour mémoire,
+  n'est plus utilisé).
+
+Un exe ne peut pas se supprimer lui-même pendant qu'il tourne (Windows
+verrouille le fichier). `operations.remove_directory_deferred` résout ça
+comme le fait Inno Setup en interne : un script `.bat` TEMPORAIRE (jamais
+dans le dossier à supprimer), lancé en processus détaché, attend
+brièvement (`ping` vers la boucle locale, universel, contrairement à
+`timeout` qui réclame un terminal interactif) que ce processus se termine,
+supprime le dossier, puis se supprime lui-même.
+
+**Piège réel rencontré et corrigé, pas une supposition** : la première
+version passait par une ligne `cmd.exe /c "ping ... & rmdir ..."`
+construite à la main. `subprocess.Popen` ré-échappe cette ligne via
+`list2cmdline`, et les guillemets d'un chemin (déjà lui-même entre
+guillemets pour tolérer les espaces) entraient en conflit avec ceux
+ajoutés autour de la commande entière -- cmd.exe refusait tout avec « la
+syntaxe du nom de fichier... est incorrecte », et NE SUPPRIMAIT RIEN.
+Découvert par un test réel (le dossier ne disparaissait jamais dans le
+délai imparti), corrigé en écrivant un vrai fichier `.bat` plutôt qu'une
+ligne de commande recomposée.
+
+### Installation PAR UTILISATEUR, même dossier qu'avant
+
+`%LOCALAPPDATA%\Programs\TRANSLAX` -- EXACTEMENT le chemin de l'ancien
+installeur Inno Setup (`DefaultDirName={localappdata}\Programs\
+{#MyAppName}`) : une mise à jour depuis une installation existante
+retombe sur les mêmes fichiers, jamais un second dossier orphelin.
+`cleanup_legacy_inno_entry` retire en plus, du mieux possible (jamais
+bloquant), l'ancienne clé de registre Inno si elle existe -- évite une
+entrée fantôme en double dans « Programmes et fonctionnalités » sur une
+machine qui avait l'ancien installeur.
+
+### Compatibilité avec une installation déjà en place
+
+Une version DÉJÀ installée avant ce changement lance encore sa mise à
+jour avec les anciens indicateurs Inno Setup (`/SILENT
+/SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /NOCANCEL` -- voir
+l'ancien `core/updater.py::launch_installer_and_quit`). `installer_app/
+main.py::_normalize_legacy_argv` reconnaît encore ces indicateurs
+(`/SILENT` -> `--silent`, les autres ignorés) -- sans ce filet, la
+première mise à jour automatique depuis une ancienne version échouerait
+en silence (argparse rejetterait `/SILENT` comme argument inconnu et
+quitterait aussitôt, alors même que TRANSLAX se serait déjà fermé en
+prévision de cette mise à jour). `core/updater.py` appelle maintenant le
+nouvel installeur avec `--silent` tout court.
+
+### Piège réel supplémentaire, trouvé seulement en testant les VRAIS exécutables gelés
+
+`register_uninstall_entry` écrivait `UninstallString`/`QuietUninstallString`
+SANS l'argument `--uninstall`. `TRANSLAX-Uninstall.exe` partage son code
+(`installer_app/main.py`) avec le Setup, et ne sait laquelle des deux
+choses faire qu'en lisant cet argument -- sans lui, « Désinstaller » depuis
+Windows tentait une INSTALLATION, qui restait bloquée (le payload n'existe
+pas dans ce petit exécutable-là). Invisible dans `tests/test_installer.py`
+(qui appelle les classes de fenêtre directement, sans passer par le vrai
+`main()`/registre) -- découvert seulement en installant puis désinstallant
+pour de vrai via le VRAI `TRANSLAX-Setup-1.20.0.exe` construit par
+`scripts/build_installer.py`, exactement le chemin qu'emprunte un
+utilisateur réel. Corrigé à deux endroits, en profondeur plutôt qu'en
+rustine : les deux chaînes de registre incluent maintenant `--uninstall`,
+ET `installer_app/main.py::should_uninstall` désinstalle aussi si ce build
+précis n'a de toute façon aucun payload à installer (filet de sécurité,
+au cas où un futur oubli similaire se reproduirait). Les deux mécanismes
+sont désormais couverts par `tests/test_installer.py` (section 10).
+
+### Vérifié réellement, à chaque étage -- avec les VRAIS exécutables gelés, pas seulement en développement
+
+- `tests/test_installer.py` (34 vérifications) : copie par blocs réelle
+  (contenu identique bit à bit après coup, jamais supposé), raccourci
+  `.lnk` RÉEL créé par PowerShell puis RELU pour vérifier sa vraie cible
+  (pas seulement son existence), écriture/lecture RÉELLE de registre sous
+  une clé de test dédiée (jamais la vraie clé TRANSLAX), fermeture RÉELLE
+  d'un processus nommé `TRANSLAX.exe` (une copie renommée de `ping.exe`,
+  lancée en boucle continue -- `notepad.exe` a été essayé en premier et
+  écarté : sur les Windows récents, il n'est qu'un redirecteur vers l'appli
+  Store, une copie renommée se termine aussitôt sans rien laisser à
+  observer), installation ET désinstallation complètes de bout en bout
+  (fenêtres construites sans jamais appeler `.show()`, comme
+  `tests/test_ui.py` -- aucune fenêtre ne surgit sur le bureau pendant les
+  tests), mode silencieux, échec propre sur un payload manquant, sélection
+  du bon mode (§ piège ci-dessus).
+- Les DEUX exécutables gelés ont ensuite été réellement construits (via le
+  VRAI `scripts/build_installer.py`, pas un raccourci de test) et le cycle
+  complet rejoué avec eux, en conditions réelles : installation silencieuse
+  dans le VRAI `%LOCALAPPDATA%\Programs\TRANSLAX` (503 Mo copiés,
+  identiques bit à bit à `dist/TRANSLAX.exe`), TRANSLAX relancé tout seul,
+  fermé, puis désinstallation en invoquant la VRAIE `QuietUninstallString`
+  lue dans le VRAI registre -- exactement la commande que Windows
+  « Applications installées » exécuterait. Dossier, raccourcis Bureau/menu
+  Démarrer et entrée de registre ont tous les trois réellement disparu.
+
 ## 6. Interface
 
 ```
