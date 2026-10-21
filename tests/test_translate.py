@@ -27,15 +27,17 @@ Pour OpusMtEngine (section 5) :
   - une VRAIE paire confirmée absente du Hub (wol_Latn -> lin_Latn) lève
     bien OpusMtUnavailable, pas une trace HuggingFace brute.
 
-Pour MadladEngine (section 6) -- poids réels (3B, ~11,8 Go) volontairement
-PAS téléchargés en développement (voir SPEC.md) :
+Pour MadladEngine (section 6) -- poids réels (3B, ~11,8 Go) longtemps
+volontairement PAS téléchargés en développement (voir SPEC.md) :
   - le mécanisme de prompt <2xx> est vérifié réellement quand même : le
     tokenizer seul (téléchargement léger, quelques Mo) suffit à confirmer
     que "<2fr>" est un jeton atomique du vocabulaire, pas éclaté en morceaux ;
   - MadladUnavailable pour une langue hors de la table de correspondance ;
   - la traduction réelle de bout en bout est sautée proprement (pas en
     échec) tant que le modèle complet n'est pas en cache sur la machine qui
-    exécute ce test.
+    exécute ce test -- ou, depuis le 21/10/2026 (poids téléchargés pour le
+    mode serveur, SPEC.md §5 tricies octies), si la machine n'a pas ~13 Go
+    de mémoire vive libre pour le charger en float32.
 
 Pour _select_device() (section 7, ajouté le 27/08/2026 -- GPU Mac) :
   - la vraie valeur sur cette machine (aucun GPU dédié) reste "cpu" ;
@@ -280,7 +282,7 @@ def main() -> int:
         print(f"  (exception inattendue : {type(exc).__name__}: {exc})")
     check("paire wol_Latn->lin_Latn (confirmée absente du Hub) lève OpusMtUnavailable", raised_correctly)
 
-    print("\n6. MADLAD-400 (licence commerciale, Google) -- poids réels non téléchargés ici")
+    print("\n6. MADLAD-400 (licence commerciale, Google)")
     # Cible hors de la table de correspondance (voir MadladUnavailable) :
     # un vrai code FLORES (hébreu), juste absent des 18 langues exposées
     # par TRANSLAX aujourd'hui -- pas un code inventé.
@@ -306,9 +308,20 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 - pas de réseau, tokenizer déplacé/renommé...
         print(f"  SAUTÉ (tokenizer MADLAD) -- {type(exc).__name__}: {exc}")
 
+    # Poids en cache depuis le 21/10/2026 (mode serveur, SPEC.md §5 tricies
+    # octies) : charger 11,8 Go en float32 demande ~13 Go de mémoire vive
+    # LIBRE -- mesuré : la conversion qui les chargeait ainsi a dépassé
+    # 14 Go de mémoire privée sur cette machine de 15,4 Go. Sauté proprement
+    # plutôt que de faire basculer toute la machine dans le fichier
+    # d'échange (le mode serveur, lui, utilise la version int8 de ~3 Go).
+    from core import server_engines
+    available_gb = server_engines.available_memory_gb()
     if not translate.is_model_cached(translate.MODEL_INFO["madlad-3b"].repo_id):
         print("  SAUTÉ (traduction réelle) -- MADLAD-400 3B (~11,8 Go) n'est pas en cache sur "
               "cette machine ; téléchargement volontairement pas déclenché par ce test (voir SPEC.md).")
+    elif available_gb is not None and available_gb < server_engines.SERVER_ENGINES["madlad"].ram_gb:
+        print(f"  SAUTÉ (traduction réelle) -- {available_gb:.1f} Go de mémoire vive disponibles, "
+              f"MADLAD-400 en float32 en demande ~{server_engines.SERVER_ENGINES['madlad'].ram_gb:.0f}.")
     else:
         madlad = translate.MadladEngine(model_key="madlad-3b", src_lang="eng_Latn", tgt_lang="fra_Latn")
         madlad.load()

@@ -2607,6 +2607,488 @@ sont désormais couverts par `tests/test_installer.py` (section 10).
   « Applications installées » exécuterait. Dossier, raccourcis Bureau/menu
   Démarrer et entrée de registre ont tous les trois réellement disparu.
 
+## 5 tricies octies. Mode serveur compatible DeepL -- pré-traduction du site ajtvirtual.com (ajouté le 21/10/2026)
+
+Demande explicite de l'utilisateur : le site ajtvirtual.com devient
+multilingue (français source, vers l'allemand, l'italien, l'anglais et le
+portugais d'Europe) et ses textes doivent être pré-traduits avec TRANSLAX
+lui-même, « en ajoutant une option qui permet de faire comme DeepL ». La
+rubrique Traductions de l'admin web (dans le navigateur,
+`https://admin.ajtvirtual.com` ou `http://localhost:3001`) appelle ce
+serveur local exactement comme elle appellerait l'API DeepL, enregistre les
+résultats comme « pré-traduits », et un humain relit.
+
+### Pourquoi ces moteurs-là : la licence d'abord
+
+Les traductions produites ici sont PUBLIÉES sur un site commercial. Seuls
+deux moteurs de TRANSLAX le permettent (voir §5 quaterdecies, §5
+quindecies, §11) :
+- **MADLAD-400 3B** (Google, Apache 2.0) -- un seul modèle pour toutes les
+  langues cibles, jeton `<2de>`/`<2it>`/`<2en>`/`<2pt>` préfixé ;
+- **OPUS-MT** (Helsinki-NLP, CC-BY 4.0 ; la fiche HuggingFace de
+  `opus-mt-fr-de` et `opus-mt-fr-en` indique même Apache 2.0) -- un modèle
+  par paire, et seuls fr->de et fr->en existent sous le nom
+  `opus-mt-fr-{xx}` (vérifié sur le Hub le 21/10/2026 : ni fr->it ni fr->pt).
+
+**NLLB-200 (CC-BY-NC 4.0, usage commercial interdit) est refusé en mode
+serveur, à trois niveaux** -- rien n'est changé à NLLB dans le reste de
+l'application :
+- au démarrage : `python cli.py serve --engine 600M` (ou `1.3B`, `3.3B`,
+  `600M-ct2`, ou tout nom contenant « nllb ») s'arrête avec le code 2 et un
+  message qui explique la licence, AVANT de charger quoi que ce soit
+  (`server_engines.check_engine_allowed`) ;
+- à la construction du service : l'objet moteur doit DÉCLARER une licence
+  commerciale (`license = "Apache-2.0"` ou `"CC-BY-4.0"`) ; les moteurs de
+  `core/translate.py` n'en déclarent aucune, et un `model_id` contenant
+  « nllb » est refusé (`server_engines.ensure_engine_instance_allowed`) --
+  un moteur NLLB passé directement par du code est donc refusé lui aussi ;
+- à chaque traduction : la même vérification est refaite.
+
+**Poids de MADLAD-400 téléchargés le 21/10/2026** : jusqu'ici volontairement
+absents (§5 quindecies : seul le tokenizer était en cache, contrairement à
+ce qu'on pouvait croire). `model.safetensors` seul, 11 761 587 872 octets,
+en 7 min 34 s -- les trois variantes GGUF du même dépôt (0,9 à 1,7 Go),
+inutiles ici, n'ont pas été prises. Le modèle OPUS-MT `opus-mt-fr-de`
+(304 Mo, `pytorch_model.bin` seul) a aussi été téléchargé pour les mesures.
+
+### Fichiers
+
+- `core/server.py` (nouveau) -- serveur HTTP (bibliothèque standard,
+  `ThreadingHTTPServer`, aucun framework ajouté), API DeepL, CORS,
+  glossaires, point d'entrée `python -m core.server`.
+- `core/server_engines.py` (nouveau) -- moteurs autorisés, contrôle de
+  licence, traduction PAR LOTS (un modèle chargé une fois sert toutes les
+  langues cibles), conversion int8 à faible mémoire.
+- `core/translation_service.py` (nouveau) -- orchestration : passes,
+  contrôles, réparations, repli par morceaux, cache, verrou.
+- `core/protection.py` (nouveau) -- analyse ICU, masquage, découpage en
+  phrases, typographie, démasquage. Aucun modèle chargé.
+- `tests/test_server.py` (nouveau, pytest) -- 73 tests, moteur factice.
+- `scripts/serveur_traduction.bat` (nouveau) -- lanceur Windows.
+- `cli.py` -- sous-commande `serve`.
+- `tests/test_translate.py` -- section 6 : la traduction réelle par
+  MADLAD-400 en float32 est maintenant SAUTÉE si la mémoire disponible est
+  inférieure à ~13 Go (les poids étant désormais en cache, ce test aurait
+  sinon chargé 11,8 Go en mémoire sur cette machine de 15,4 Go).
+
+### L'API
+
+| Méthode | Chemin | Rôle |
+|---|---|---|
+| POST | `/v2/translate` | traduction (JSON ou formulaire encodé, plusieurs `text`) |
+| GET | `/v2/languages?type=source` / `?type=target` | `FR` ; `DE`, `EN-GB`, `EN-US`, `IT`, `PT-PT`, `PT-BR` (selon le moteur) |
+| GET | `/v2/usage` | caractères traduits depuis le démarrage |
+| POST | `/v2/glossaries` | glossaire façon DeepL (`name`, `source_lang`, `target_lang`, `entries` en TSV ou CSV) |
+| GET / DELETE | `/v2/glossaries`, `/v2/glossaries/{id}`, `/v2/glossaries/{id}/entries` | liste, fiche, entrées (TSV), suppression |
+| GET | `/v2/glossary-language-pairs` | paires prises en charge |
+| GET | `/health` | état : moteur, modèle, licence, prêt ou non, erreur éventuelle, temps de chargement |
+
+`POST /v2/translate` lit `text`, `source_lang` (facultatif, `FR` seulement),
+`target_lang` (`DE`, `IT`, `EN` = `EN-GB`, `EN-US`, `PT` = `PT-PT`,
+`PT-BR`), `split_sentences` (`0` désactive le découpage en phrases) et
+`glossary_id`. Acceptés et ignorés sans erreur : `tag_handling` (les balises
+sont TOUJOURS protégées), `formality`, `preserve_formatting`, `context`,
+`model_type`. Deux extensions non-DeepL, facultatives :
+`glossary_entries` (objet `{"devis": "Offerte"}`, liste de paires ou texte
+TSV) et `keep_terms` (liste, ou texte séparé par des virgules). Réponse :
+`{"translations": [{"detected_source_language": "FR", "text": "…"}]}`, plus
+un champ `"warnings"` (liste de phrases en français) SEULEMENT quand un
+contrôle a échoué -- les clients DeepL l'ignorent. Limites : 50 textes par
+requête (comme DeepL), 2 Mo.
+
+**Sécurité, sans rien demander à l'utilisateur** :
+- lié à `127.0.0.1` EN DUR (aucune option pour l'ouvrir au réseau) ;
+- en-tête `Host` vérifié (`127.0.0.1` ou `localhost` seulement) : protège
+  du « DNS rebinding » ;
+- en-tête `Origin` : s'il est présent et pas dans la liste des origines
+  autorisées, réponse 403 AVANT tout travail -- un autre site ouvert dans
+  le navigateur ne peut ni faire travailler le modèle ni toucher aux
+  glossaires (une requête « simple » en formulaire n'a pas de pré-vol
+  CORS : c'est ce contrôle-là qui l'arrête, pas le navigateur) ;
+- CORS : origines par défaut `https://admin.ajtvirtual.com`,
+  `http://localhost:3000`, `:3001`, `:3002` (option `--cors-origin`,
+  répétable, qui remplace la liste) ; `OPTIONS` répond 204 avec
+  `Access-Control-Allow-Origin`, `-Methods`, `-Headers: Content-Type,
+  Authorization` et `Access-Control-Allow-Private-Network: true` (sans ce
+  dernier, Chrome bloque un site https qui appelle 127.0.0.1) ;
+- clé facultative : `Authorization: DeepL-Auth-Key <clé>` (ou `auth_key`
+  en formulaire) exigé SEULEMENT si une clé est configurée (`--auth-key`
+  ou variable `TRANSLAX_SERVER_KEY`) ; `/health` et `OPTIONS` restent
+  libres (le navigateur n'envoie jamais la clé dans un pré-vol).
+
+Le modèle est chargé UNE fois, dans un fil à part au démarrage : `/health`
+répond tout de suite (`"status": "loading"`, puis `"ready"`), et
+`/v2/translate` renvoie 503 avec `Retry-After: 10` tant que le chargement
+n'est pas fini. Un seul modèle en mémoire, une traduction à la fois (verrou),
+les autres requêtes attendent leur tour.
+
+### Protection du texte (`core/protection.py`, `core/translation_service.py`)
+
+Les textes viennent du système de traduction du site (syntaxe ICU de
+next-intl, inventaire réel au 21/10/2026 : 894 textes, 9 118 mots, médiane
+4 mots ; 54 `<strong>`, balises `<link>`, `<cgv>`, `<note>`, `<mail>`,
+`<dot>`, `<end>`, `<stripe>`, `<twint/>` ; 31 variables différentes ;
+7 pluriels ; 62 textes avec espace insécable, 2 avec espace fine).
+
+1. **Analyse ICU complète** (variables, arguments formatés, `plural`,
+   `select`, `selectordinal`, `offset`, `#`, littéraux entre apostrophes,
+   balises imbriquées) ; aller-retour exact vérifié sur les 894 textes. Un
+   texte invalide (balise jamais fermée...) passe en mode dégradé, avec un
+   avertissement.
+2. **Pluriels** : la structure est gardée telle quelle ; chaque branche est
+   un message traduit À PART (`# service`, `# services`), `#` compris ; dans
+   la phrase qui l'entoure, le pluriel est montré au modèle comme une
+   variable (`Voir le panier, {count}`).
+3. **Repères** : chaque élément protégé est remplacé par un repère interne
+   (caractères Unicode à usage privé), puis montré au modèle **dans la
+   syntaxe d'origine** : `{name}`, `<strong>…</strong>`, `<twint/>`, `#`,
+   marques en clair. **Choix mesuré, pas supposé** : sur 80 phrases réelles
+   du site contenant des repères, MADLAD-400 en a perdu 6 (allemand) et 5
+   (anglais) quand ils étaient neutres (`<x1/>`, `<g2>…</g2>`, forme
+   XLIFF), contre 2 et 0 dans la syntaxe d'origine -- le modèle a vu du HTML
+   et des chaînes de logiciels, et `{amount}` lui dit que c'est un montant.
+   Exception : les **termes imposés** restent en repère neutre `<x3/>` --
+   mesuré aussi : injecté en clair dans la phrase française, « Offerte » a
+   été RETRADUIT en « Angebot » dans 12 phrases sur 12 en allemand (7 sur 12
+   restées « quote » en anglais) ; en repère, présent 12 fois sur 12.
+4. **Découpage en phrases** avant traduction (jamais à l'intérieur d'une
+   balise, ni après « M. », « p. ex. »…, ni avant une minuscule) : MADLAD a
+   été entraîné sur des phrases, et les lots de phrases courtes vont plus
+   vite. `split_sentences=0` le désactive.
+5. **Un seul lot** pour toute la requête : toutes les phrases de tous les
+   textes partent ensemble au moteur (les doublons une fois), avec un cache
+   (langue, phrase) entre les requêtes.
+6. **Contrôle de chaque phrase** : tous les repères revenus, une seule fois,
+   bien imbriqués, chaque élément dans la même balise qu'à la source, aucune
+   accolade ni balise ajoutée, aucun `#` ajouté dans un pluriel.
+7. **Réparations qui gardent la phrase entière**, dans cet ordre :
+   - variable RENOMMÉE par le modèle (vu : `{number}` -> `{Zahl}`,
+     `{position}` -> `{posizione}`, `{code}` -> `{código}` sur des libellés
+     courts) : reprise seulement sans ambiguïté (une variable manquante,
+     une accolade inconnue) ;
+   - `#` perdu dans une branche de pluriel (vu : « # chapitres » compris
+     comme « nombre de chapitres » -> « Anzahl der Kapitel », « No. of
+     chapters ») : la branche est retraduite avec un vrai nombre à la place
+     (« 12 chapitres » ; 12 et pas 5 : « 5 étoiles » devient
+     « 5-Sterne-Hotel », vu aussi), remis en `#` ensuite ;
+   - balise perdue (vu : le modèle réorganise la phrase et abandonne un
+     `<strong>`) : le contenu de la balise est traduit seul, retrouvé dans
+     la phrase traduite et entouré à nouveau ; à défaut d'une correspondance
+     exacte, la plus longue suite de mots communs (au moins la moitié du
+     contenu) -- avertissement « replacée par rapprochement » ;
+   - marque traduite (vu : « STRUKTUR » devenu « STRUTTURA » en italien) :
+     la phrase est retraduite avec les marques en repères neutres.
+8. **Repli par morceaux** si tout cela échoue : le texte entre deux
+   éléments structurels est traduit seul, et la structure est réassemblée
+   telle quelle (marques alors en repères neutres) -- contexte réduit,
+   structure garantie, avertissement « à relire ».
+9. **Retouches de la langue cible** : plus d'espace (insécable, fine ou
+   normale) avant `: ; ? !` en allemand, italien, anglais et portugais ;
+   guillemets « … » sans espaces intérieures (allemand -- usage suisse --,
+   italien, portugais), “…” en anglais, „…“ allemand ramené à «…» ;
+   **ß -> ss** (allemand de Suisse, termes imposés compris) ; point final
+   ajouté par le modèle à un libellé qui n'en avait pas retiré ; espaces
+   INTÉRIEURES des balises reprises de la source (« conditions.<strong> Le
+   paiement… ») ; apostrophe droite collée devant une variable ou une
+   balise (« dell'{brand} ») changée en ’ -- sinon ICU la lit comme le début
+   d'un littéral et l'affichage du site casse.
+10. **Marques jamais traduites** : AJTVIRTUAL, AJT Connect, STRUKTUR,
+    AJTASK, AJTOOL, TWINT, App Store, Google Play, plus `keep_terms` ; casse
+    d'origine rétablie si le modèle l'a changée (« Struktur » -> STRUKTUR,
+    mais une forme exacte présente ailleurs dans la phrase est préférée :
+    le mot allemand « Struktur » reste intact). AJTOOL a été ajouté après
+    l'essai réel (il passait sans protection).
+11. **Termes imposés** (`glossary_entries`, `glossary_id`) : comparaison sans
+    la casse, mots entiers, le plus long gagne (« sur devis » -> « auf
+    Anfrage » avant « devis » -> « Offerte ») ; majuscule en début de phrase.
+    Le résultat contient TOUJOURS le terme imposé, sinon avertissement.
+12. **Contrôle final** : le texte traduit est réanalysé et doit avoir
+    exactement les mêmes variables, balises et pluriels que la source,
+    au même niveau d'imbrication ; sinon nouvel essai par morceaux, puis
+    avertissement si l'échec persiste.
+
+**Efficacité mesurée sur TOUS les textes protégés du site** (211 textes sur
+894 contiennent une variable, une balise, un pluriel ou une marque ; 335
+phrases ; MADLAD-400 int8, faisceau 2, le 21/10/2026) :
+
+| Langue | Phrases réparées (7) | Textes repassés par morceaux (8) | Textes avec avertissement | Contrôle final en échec | Terme perdu |
+|---|---|---|---|---|---|
+| allemand | 3 | 0 | 2 (balise replacée par rapprochement) | 0 | 0 |
+| italien | 2 | 1 | 2 | 0 | 0 |
+| anglais | 2 | 1 | 1 | 0 | 0 |
+| portugais | 2 | 0 | 0 | 0 | 0 |
+
+Même mesure AVANT les réparations du point 7 (même jour) : 6, 9, 4 et 7
+textes repassés par morceaux, et STRUKTUR perdu (traduit) en italien,
+anglais et portugais. Les deux balises replacées par rapprochement en
+allemand tombent juste (« auf die `<strong>`sichere Zahlungsseite`</strong>`
+von Stripe », « stellt eine verbindliche `<strong>`vertragliche
+Verpflichtung`</strong>` dar ») -- signalées quand même, pour relecture.
+
+### Conversion int8 à faible mémoire -- piège réel rencontré
+
+TRANSLAX savait déjà convertir un modèle au format CTranslate2 (moteur
+Turbo, §5 terdecies), et le convertisseur installé prend en charge T5
+(`T5Loader`). Mais la conversion standard (`TransformersConverter`) charge
+d'abord les 11,8 Go de poids float32 dans transformers : **mesuré sur cette
+machine (15,4 Go de RAM, ~1 Go libre ce jour-là), 14,8 Go de mémoire
+privée au bout de 4 minutes et en hausse** -- conversion arrêtée à la main
+avant d'épuiser la mémoire virtuelle (et de faire planter les applications
+ouvertes). Deuxième essai : fichier `.safetensors` projeté en mémoire en
+copie-sur-écriture -- Windows réserve d'emblée 11,4 Go de mémoire engagée
+pour une telle projection, abandonné aussi.
+
+**Solution retenue** (`server_engines.convert_t5_low_memory`) : le fichier
+est projeté en LECTURE SEULE (`np.memmap`), le MÊME `T5Loader` de
+CTranslate2 construit le modèle à partir d'objets qui imitent les modules
+transformers, et chaque tenseur n'est copié qu'au moment de SA
+quantification (le temps de la conversion seulement, `NumpyVariable.to` est
+remplacé par une version qui copie un tableau en lecture seule ; restauré
+ensuite). Fusions q/k/v et valeurs int8 identiques à la conversion
+standard. **Mesuré : 213 s, pic de mémoire privée 5,3 Go**, `model.bin` de
+2 950 208 324 octets dans `%APPDATA%\TRANSLAX\ctranslate2-models\
+google__madlad400-3b-mt\` (même dossier que le moteur Turbo). Faite une
+seule fois, au premier démarrage du moteur `madlad-ct2` (le serveur répond
+`"status": "loading"` pendant ce temps).
+
+Le moteur `madlad` (PyTorch float32) reste disponible pour une machine qui
+a ~13 Go de mémoire LIBRE ; il n'a PAS été chargé sur cette machine (même
+raison), et le serveur prévient au démarrage quand la mémoire disponible
+est inférieure au besoin.
+
+### Réglages de génération -- pas ceux du mode livre
+
+- **Pas de `no_repeat_ngram_size`** (le mode livre en met un, §10) : deux
+  `<strong>` ou deux variables dans une même phrase répètent forcément les
+  mêmes trigrammes de jetons ; les interdire forcerait le modèle à abîmer la
+  seconde.
+- **Lots** : sans le piège du mode livre (§10, « batching + padding fait
+  dérailler NLLB ») -- CTranslate2 gère le remplissage proprement. Mesuré :
+  15 textes courts en 12,9 s en un lot contre 33,1 s un par un, sorties
+  identiques 14 fois sur 15 (la 15e : « Zuletzt aktualisiert » au lieu de
+  « Letzte Aktualisierung », les deux justes).
+- **Faisceau 2 par défaut** (`--beams`), **2 traducteurs × 4 fils**
+  (CTranslate2 `inter_threads=2`, `intra_threads=4`, lots de 8) : voir les
+  mesures.
+
+### Lancement
+
+```
+cd C:\DEV\TRANSLAX\PROJECTS\TRANSLAX
+.venv\Scripts\python.exe cli.py serve                       # MADLAD-400 int8, port 8765
+.venv\Scripts\python.exe cli.py serve --engine opus-mt      # OPUS-MT (de et en seulement)
+.venv\Scripts\python.exe cli.py serve --port 8800 --auth-key ma-cle --beams 1
+.venv\Scripts\python.exe -m core.server --help              # même chose sans cli.py
+scripts\serveur_traduction.bat                              # double-clic (mêmes options en plus)
+```
+
+Options : `--port` (8765), `--engine` (`madlad-ct2` par défaut, `madlad`,
+`opus-mt`), `--beams`, `--threads`, `--auth-key`, `--cors-origin`
+(répétable), `--max-texts` (50), `--autoriser-telechargement` (sinon,
+jamais de téléchargement : message clair si les poids manquent).
+
+Exemples (Git Bash ou macOS ; sous PowerShell, écrire `curl.exe`) :
+
+```
+curl -s http://127.0.0.1:8765/health
+
+curl -s http://127.0.0.1:8765/v2/translate -H "Content-Type: application/json" -d '{
+  "text": ["Merci {name}. Votre paiement de <strong>{amount}</strong> a bien été reçu.",
+           "{count, plural, one {# service sélectionné} other {# services sélectionnés}}"],
+  "source_lang": "FR", "target_lang": "DE", "tag_handling": "xml",
+  "glossary_entries": {"devis": "Offerte", "sur devis": "auf Anfrage"},
+  "keep_terms": ["QR-facture"]}'
+
+curl -s http://127.0.0.1:8765/v2/translate -d "text=Payer maintenant" -d "text=Fermer" -d "target_lang=IT"
+
+curl -s "http://127.0.0.1:8765/v2/languages?type=target"
+
+curl -s http://127.0.0.1:8765/v2/glossaries -H "Content-Type: application/json" -d '{
+  "name": "Site DE", "source_lang": "fr", "target_lang": "de",
+  "entries": "devis\tOfferte\nsur devis\tauf Anfrage", "entries_format": "tsv"}'
+```
+
+Côté admin (navigateur) : `fetch("http://127.0.0.1:8765/v2/translate",
+{method: "POST", headers: {"Content-Type": "application/json"}, body:
+JSON.stringify({...})})` -- `127.0.0.1` plutôt que `localhost` (le serveur
+n'écoute qu'en IPv4).
+
+### Mesures (Ryzen 7 4700U, 8 cœurs, CPU seul, 15,4 Go de RAM, le 21/10/2026)
+
+MADLAD-400 3B, CTranslate2 int8 :
+- chargement : 24,2 s la première fois, 19,2 s ensuite (fichier en cache
+  disque) ; ~3 Go de mémoire vive ;
+- textes courts d'interface (5 à 15 mots ; 40 textes réels du site, 337
+  mots, allemand) :
+
+| Réglage | Durée | Textes/s | Mots/s |
+|---|---|---|---|
+| faisceau 1, 1 × 8 fils | 17,2 s | 2,32 | 19,6 |
+| faisceau 2, 1 × 8 fils | 28,5 s | 1,40 | 11,8 |
+| faisceau 2, 2 × 4 fils, lots de 8 (défaut) | 25,4 s | 1,57 | 13,3 |
+| faisceau 4, 1 × 8 fils | 59,0 s | 0,68 | 5,7 |
+
+  Qualité : 26 sorties sur 40 identiques entre faisceaux 2 et 4, les autres
+  équivalentes (le 4 n'est pas meilleur) ; 25 sur 40 entre 1 et 2, le
+  faisceau 1 un peu moins soigné (« Geschlossenen Test beitreten » avec
+  majuscule fautive, « Services » au lieu de « Dienstleistungen ») ;
+- paragraphes (> 40 mots ; 6 textes réels, 344 mots, découpés en 14
+  phrases) : 7,2 s par paragraphe en faisceau 2 (8,0 mots/s), 4,5 s en
+  faisceau 1 -- où une balise a été perdue (repli par morceaux) ;
+- tous les textes protégés du site (211 textes, 4 401 mots, 21 mots en
+  moyenne, par lots de 50 comme l'admin) : 315 à 369 s par langue, soit
+  0,57 à 0,67 texte/s, 12 à 14 mots/s.
+
+**Estimation pour ~1 500 textes courts par langue** : à 1,4-1,6 texte/s,
+**16 à 18 minutes par langue, environ 1 h 10 pour les quatre** (faisceau
+2) ; 11 minutes par langue en faisceau 1. Le site actuel (894 textes, 9 365
+mots, médiane 4 mots) : à 12-14 mots/s, **environ 12 minutes par langue,
+moins d'une heure pour les quatre**.
+
+OPUS-MT fr->de (transformers, float32, faisceau 4) : chargement 16,7 s,
+~0,7 Go ; 40 textes courts en 7,6 s (5,23 textes/s, 44 mots/s -- 3,3 fois
+MADLAD) ; 6 paragraphes en 7,5 s (46 mots/s). Recopie bien `{name}` et les
+balises (il ajoute une espace avant les balises fermantes, corrigée par la
+retouche des espaces intérieures), mais traduit nettement moins bien :
+« TWINT se paie dans l'app » -> « TWINT zahlt sich in der App aus »
+(« rapporte »), « {count} Ausgewählte Dienste » (majuscule fautive). Et
+seulement vers l'allemand et l'anglais : à réserver aux essais rapides.
+
+### Essai réel : 10 textes du site, 4 langues, par le VRAI serveur HTTP
+
+10 textes pris tels quels dans `ajtvirtual_i18n/i18n/source/fr/*.json`
+(lecture seule), choisis pour couvrir pluriels, variables, balises, espaces
+insécables, guillemets et marques ; une requête JSON par langue, comme
+l'admin (en-tête `Origin: https://admin.ajtvirtual.com`, réponse CORS
+vérifiée), MADLAD-400 int8, faisceau 2. **Résultat : 40 traductions sur 40
+avec exactement les variables, balises, pluriels et marques de la source,
+aucun avertissement** ; 10 textes (18 phrases) en 23,8 s (allemand),
+19,5 s (italien), 18,6 s (anglais), 20,5 s (portugais) ; une phrase réparée
+par langue (le `#` de « # chapitres »), aucune par morceaux.
+
+1. `{count, plural, one {# service sélectionné} other {# services sélectionnés}}`
+   - DE : `{count, plural, one {# Service ausgewählt} other {# ausgewählte Dienstleistungen}}`
+   - IT : `{count, plural, one {# servizio selezionato} other {# servizi selezionati}}`
+   - EN : `{count, plural, one {# service selected} other {# services selected}}`
+   - PT : `{count, plural, one {# serviço selecionado} other {# serviços selecionados}}`
+2. `Merci {name}. Votre paiement de <strong>{amount}</strong> a bien été reçu.`
+   - DE : `Danke, {name}. Ihre Zahlung von <strong>{amount}</strong> ist erfolgreich eingegangen.`
+   - IT : `Grazie {name}. Il tuo pagamento di <strong>{amount}</strong> è stato ricevuto.`
+   - EN : `Thank you, {name}. Your payment of <strong>{amount}</strong> has been received.`
+   - PT : `Obrigado, {name}. O seu pagamento de <strong>{amount}</strong> foi recebido.`
+3. `L'envoi de cette demande ne déclenche aucun paiement. Vous réglerez votre devis séparément, après réception, par carte, <twint/> ou QR-facture. <note>Rétractation possible sous 10 jours.</note>`
+   - DE : `Das Senden dieser Anfrage löst keine Zahlung aus. Sie bezahlen Ihr Angebot nach Erhalt separat per Karte, <twint/> oder QR-Rechnung. <note>Widerruf innerhalb von 10 Tagen möglich.</note>`
+   - IT : `L'invio di questa richiesta non innesca alcun pagamento. Paga il tuo preventivo separatamente, dopo averlo ricevuto, con carta, <twint/> o fattura QR. <note>Recesso possibile entro 10 giorni.</note>`
+   - EN : `Sending this request does not trigger any payment. You will pay for your quote separately, upon receipt, by card, <twint/> or QR-invoice. <note>Can be withdrawn within 10 days.</note>`
+   - PT : `O envio desta solicitação não aciona nenhum pagamento. Após a receção do seu orçamento, paga-o separadamente com cartão, <twint/> ou fatura QR. <note>Período de desistência de 10 dias.</note>`
+4. `Sans engagement de durée minimale : vous pouvez demander la résiliation à tout moment par e-mail à <strong>{email}</strong>.`
+   - DE : `Keine Mindestverpflichtung: Sie können die Kündigung jederzeit per E-Mail an <strong>{email}</strong> beantragen.`
+   - IT : `Nessun impegno di durata minima: puoi richiedere la disdetta in qualsiasi momento via e-mail a <strong>{email}</strong>.`
+   - EN : `No minimum duration commitment: you can request termination at any time by email to <strong>{email}</strong>.`
+   - PT : `Sem compromisso de duração mínima: você pode solicitar o cancelamento a qualquer momento por e-mail para <strong>{email}</strong>.`
+5. `{minutes} min de lecture · {count, plural, one {# chapitre} other {# chapitres}}`
+   - DE : `{minutes} Minuten Lesezeit · {count, plural, one {# Kapitel} other {# Kapitel}}`
+   - IT : `{minutes} minuti di lettura · {count, plural, one {# capitolo} other {# capitoli}}`
+   - EN : `{minutes} min read · {count, plural, one {# chapter} other {# chapters}}`
+   - PT : `{minutes} minutos de leitura · {count, plural, one {# capítulo} other {# capítulos}}`
+6. `Une autre façon de mener un projet applicatif : un parcours clair, sans processus lourds, pour toute structure qui veut construire et faire durer sa présence numérique.` (espace insécable avant « : »)
+   - DE : `Eine andere Art, ein Anwendungsprojekt zu führen: ein klarer Weg, ohne umständliche Prozesse, für jede Organisation, die ihre digitale Präsenz aufbauen und dauerhaft halten möchte.`
+   - IT : `Un altro modo di condurre un progetto applicativo: un percorso chiaro, senza processi pesanti, per qualsiasi struttura che voglia costruire e far durare la propria presenza digitale.`
+   - EN : `Another way to run an application project: a clear path, without heavy processes, for any structure that wants to build and sustain its digital presence.`
+   - PT : `Outra forma de conduzir um projeto de aplicação: um percurso claro, sem processos pesados, para qualquer organização que queira construir e manter a sua presença digital.`
+7. `TWINT se paie dans l’app AJT Connect : touchez « Payer en ligne » dans votre commande, puis choisissez TWINT. Connectez-vous avec l’adresse e-mail de votre devis.`
+   - DE : `TWINT wird in der AJT Connect App bezahlt: Tippen Sie in Ihrer Bestellung auf «Online bezahlen» und wählen Sie TWINT. Melden Sie sich mit der E-Mail-Adresse Ihres Angebots an.`
+   - IT : `TWINT si paga nell’app AJT Connect: tocca «Paga online» nel tuo ordine e scegli TWINT. Effettua il login con l’indirizzo e-mail del tuo preventivo.`
+   - EN : `You can pay for TWINT in the AJT Connect app: Tap “Pay online” in your order and then choose TWINT. Log in with the email address of your quote.`
+   - PT : `O TWINT é pago na aplicação AJT Connect: toque em «Pagar online» na sua encomenda e selecione TWINT. Faça login com o endereço de e-mail do seu orçamento.`
+8. `Je confirme vouloir souscrire à cet abonnement et j'ai pris connaissance des conditions.<strong> Le paiement est saisi à l'étape suivante, sur la page sécurisée Stripe.</strong>`
+   - DE : `Ich bestätige, dass ich dieses Abonnement abschliessen möchte und die Bedingungen gelesen habe.<strong> Die Zahlung erfolgt im nächsten Schritt auf der sicheren Stripe-Seite.</strong>`
+   - IT : `Confermo di voler sottoscrivere questo abbonamento e di aver preso visione delle condizioni.<strong> Il pagamento viene inserito nella fase successiva, sulla pagina sicura Stripe.</strong>`
+   - EN : `I confirm that I want to subscribe to this subscription and I have read the terms and conditions.<strong> The payment is entered in the next step, on the secure Stripe page.</strong>`
+   - PT : `Confirmo que quero subscrever esta subscrição e li os termos.<strong> O pagamento é introduzido no passo seguinte, na página segura do Stripe.</strong>`
+9. `Consultez nos <cgv>conditions générales de vente</cgv>.`
+   - DE : `Lesen Sie unsere <cgv>Allgemeinen Geschäftsbedingungen</cgv>.`
+   - IT : `Consulta le nostre <cgv>condizioni generali di vendita</cgv>.`
+   - EN : `See our <cgv>general terms and conditions</cgv>.`
+   - PT : `Consulte os nossos <cgv>termos e condições</cgv>.`
+10. `Gratuite pour les clients d’AJTVIRTUAL : créez votre compte en une minute, ou, si vous avez déjà commandé chez nous, ouvrez votre espace avec un code reçu par email.`
+    - DE : `Kostenlos für AJTVIRTUAL-Kunden: Erstellen Sie Ihr Konto in einer Minute oder, wenn Sie bereits bei uns bestellt haben, öffnen Sie Ihren Bereich mit einem Code, den Sie per E-Mail erhalten haben.`
+    - IT : `Gratuita per i clienti di AJTVIRTUAL: crea il tuo account in un minuto, oppure, se hai già ordinato da noi, apri il tuo spazio con un codice ricevuto via email.`
+    - EN : `Free for AJTVIRTUAL customers: create your account in a minute, or, if you have already ordered from us, open your space with a code received by email.`
+    - PT : `Grátis para clientes da AJTVIRTUAL: crie sua conta em um minuto ou, se você já fez um pedido conosco, abra seu espaço com um código recebido por e-mail.`
+
+À la relecture : allemand « abschliessen » (ß déjà remplacé), « Angebot »
+pour « devis » (imposer « Offerte » par glossaire si voulu), branches du
+pluriel 1 traduites chacune seule et donc pas harmonisées (« Service » /
+« Dienstleistungen ») ; portugais mêlé de brésilien (« você », « crie sua
+conta », « conosco ») ; anglais 7 au sens déplacé (« You can pay for
+TWINT »). Exactement le travail attendu de la relecture humaine.
+
+### Limites connues
+
+- **Source : français seulement** (`source_lang` autre que `FR` refusé).
+- **Portugais** : MADLAD n'a qu'un jeton `<2pt>` (pas de `<2pt_PT>`, vérifié
+  dans son vocabulaire) ; `PT-PT` et `PT-BR` donnent la même sortie, qui
+  peut pencher vers le brésilien -- à surveiller à la relecture. De même,
+  `EN-GB` et `EN-US` donnent la même sortie.
+- **Allemand** : `<2de>` donne de l'allemand standard (pas le dialecte
+  `<2gsw>`) ; seuls ß -> ss et les guillemets sont adaptés à la Suisse.
+  « devis » sort « Angebot » (Allemagne) : imposer « Offerte » par
+  `glossary_entries` si voulu.
+- **Termes imposés** : remplacés tels quels, sans accord (vu à l'essai :
+  « Der Offerte ist 30 Tage gültig » au lieu de « Die Offerte » --
+  l'article est choisi par le modèle sans connaître le terme) ; une entrée
+  par forme (« prestations » ne correspond pas à « prestation ») ; une
+  expression figée a besoin de sa propre entrée (« sur devis » -> « auf
+  Anfrage », sinon « Auf Offerte »).
+- **Repli par morceaux** : structure garantie, mais le contexte de la
+  phrase est perdu (ordre des mots, majuscules) -- toujours signalé par un
+  avertissement, à relire.
+- Le découpage en phrases supprime le contexte d'une phrase à l'autre
+  (genre d'un pronom...).
+- `tag_handling` est ignoré : les balises sont toujours protégées.
+- Pas de `formality` (MADLAD ne la gère pas).
+- Navigateurs : Chrome/Edge acceptent qu'une page https appelle
+  `http://127.0.0.1` (adresse considérée sûre) grâce à
+  `Access-Control-Allow-Private-Network` ; les versions récentes de Chrome
+  peuvent demander une autorisation « accès au réseau local » à
+  l'utilisateur. Safari bloque ce type d'appel : utiliser Chrome/Edge, ou
+  l'admin servie en local (`http://localhost:3001`).
+
+### Interface graphique : pas d'option ajoutée, volontairement
+
+Tous les points d'entrée possibles de l'interface (hall d'accueil, écran
+Outils, page Paramètres) sont construits dans `ui/main_window.py`, qui
+porte en ce moment une modification de l'utilisateur non enregistrée
+(dossier principal) : l'ajouter sans toucher ce fichier aurait demandé
+d'injecter un bouton depuis `main.py` dans la mise en page interne de
+`MainWindow` -- fragile, et cassable en silence par cette modification.
+Le lanceur `scripts/serveur_traduction.bat` sert de point d'entrée en
+double-clic. Ajout simple à faire plus tard, une fois la modification de
+l'utilisateur enregistrée : un bouton « SERVEUR DE TRADUCTION » dans
+`_build_hub_page` qui lance `cli.py serve` dans un processus séparé (le
+modèle ne doit pas vivre dans le processus de l'interface).
+
+### Vérifié
+
+- `tests/test_server.py` : 73 tests pytest, tous passent (~1,5 s, aucun
+  modèle chargé) -- `.venv\Scripts\python.exe -m pytest tests/test_server.py`
+  (pytest n'est pas dans `requirements.txt` : à installer dans le `.venv`
+  pour lancer ces tests ; `python tests/test_server.py` le lance aussi).
+- `tests/test_settings.py`, `tests/test_pipeline.py` : tout passe.
+- `tests/test_translate.py` : tout passe. Sur cette machine, sa section 4
+  se saute et termine le test plus tôt (`scan_cache_dir` ne voit que 22 Mo
+  du modèle NLLB 600M alors que 4,7 Go sont sur le disque -- état du cache
+  antérieur à ce travail) ; relancé en forçant la détection du 600M :
+  sections 4 à 7 passent (Turbo 15,6 fois plus rapide que Précis sur le
+  lot), et la section 6 saute proprement la traduction MADLAD float32
+  (4,6 Go de mémoire libre).
+- Le VRAI serveur, lancé par `cli.py serve`, interrogé avec curl : santé,
+  pré-vol OPTIONS (dont `Access-Control-Allow-Private-Network: true`),
+  JSON avec termes imposés et `keep_terms`, formulaire, origine étrangère
+  refusée (403), langues, glossaire créé, utilisé puis supprimé, usage.
+  Refus de `--engine 600M` / `600M-ct2` vérifié (code de sortie 2).
+
 ## 6. Interface
 
 ```
@@ -2957,6 +3439,12 @@ changement de code nécessaire.
 > dans le cache local) et PyMuPDF par une bibliothèque d'extraction PDF sous
 > licence permissive (ex. `pypdf`, MIT) — avant toute mise en vente, pas
 > après.
+
+> **Mode serveur (21/10/2026, §5 tricies octies)** : ses traductions sont
+> publiées sur le site commercial ajtvirtual.com. Seuls MADLAD-400
+> (Apache 2.0) et OPUS-MT (CC-BY 4.0) y sont permis ; NLLB-200 y est
+> refusé au démarrage comme à chaque traduction. Le mode serveur n'utilise
+> pas PyMuPDF.
 
 ## 12. Évolutions possibles (plus tard)
 

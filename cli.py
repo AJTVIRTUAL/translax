@@ -8,6 +8,12 @@ moteur ou de l'interface.
     python cli.py ../../DRAFTS/Books/IlluVol1.txt
     python cli.py livre.pdf -o C:/Traductions --limit 5
     python cli.py livre.pdf --restart          (ignore une reprise possible)
+
+Mode serveur (pré-traduction du site, API compatible DeepL, voir
+core/server.py et SPEC.md §5 tricies octies) :
+
+    python cli.py serve --port 8765 --engine madlad-ct2
+    python cli.py serve --help
 """
 from __future__ import annotations
 
@@ -31,6 +37,12 @@ def format_duration(seconds: float) -> str:
 
 
 def main() -> int:
+    # Sous-commande « serve » : serveur de traduction compatible DeepL. Un
+    # fichier réellement nommé « serve » reste traduisible comme avant.
+    if len(sys.argv) > 1 and sys.argv[1] == "serve" and not Path("serve").exists():
+        from core import server
+        return server.main(sys.argv[2:])
+
     parser = argparse.ArgumentParser(description="TRANSLAX — traduction locale NLLB-200")
     parser.add_argument("input", help="fichier PDF, TXT ou MD à traduire")
     parser.add_argument("-o", "--output-dir", default=None, help="dossier de sortie (défaut : celui du fichier source)")
