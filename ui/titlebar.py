@@ -4,20 +4,38 @@ Barre de titre stylisée, à la place de la barre native du système.
 La fenêtre est créée avec `Qt.FramelessWindowHint` (voir `main_window.py`) :
 l'OS ne dessine plus rien en haut de la fenêtre, ni icône, ni titre, ni
 boutons Réduire/Agrandir/Fermer. Ce module recrée les trois, dans le style
-QSS de TRANSLAX plutôt que le style natif du système — avec une présentation
-différente selon l'OS (`sys.platform`), choisie une seule fois à la
-construction :
+QSS de TRANSLAX plutôt que le style natif du système, selon deux
+présentations au choix (réglage « Boutons de la fenêtre », page Paramètres,
+voir `core/settings.py::get_window_button_style`) :
 
-  - **Windows** : icône à gauche, titre à côté, boutons Réduire/Agrandir/
+  - **"mac"** (par défaut sur tous les OS depuis le 10/11/2026 -- demande
+    explicite de l'utilisateur : « exactement comme pour les logiciels
+    Apple », « le survol doit faire apparaître les x, - ») : pastilles
+    rouge/jaune/verte à gauche (`MacTrafficLights`), titre centré, pas
+    d'icône dans la barre. Comme sur macOS :
+      * survoler le GROUPE révèle les trois glyphes ensemble (×, −, et les
+        deux flèches du vert -- tournées vers l'intérieur quand la fenêtre
+        est agrandie) ;
+      * fenêtre inactive : pastilles grises, recolorées dès qu'on les survole ;
+      * pastille enfoncée : teinte assombrie tant que le clic est maintenu.
+  - **"windows"** : icône à gauche, titre à côté, boutons Réduire/Agrandir/
     Fermer à droite, dessinés en traits fins façon Windows 11
-    (`TitleBarButton`). Code inchangé depuis sa version d'origine.
-  - **macOS** : pastilles rouge/jaune/vert à gauche (`MacTrafficLightButton`),
-    titre centré, pas d'icône dans la barre — convention native Mac.
+    (`TitleBarButton`) ; Fermer passe au rouge avec une croix blanche au
+    survol, comme le vrai bouton de Windows.
 
 Les deux présentations exposent exactement la même interface publique
 (signaux `minimize_clicked` / `maximize_clicked` / `close_clicked`,
-méthodes `set_icon` / `set_maximized`) : `main_window.py` n'a besoin
-d'aucun code spécifique à l'OS, il utilise `TitleBar` telle quelle.
+méthodes `set_icon` / `set_maximized` / `set_window_active` /
+`refresh_hover`) : `main_window.py` n'a besoin d'aucun code spécifique.
+
+**Survol « bloqué »** (corrigé le 10/11/2026) : Qt ne reçoit pas toujours
+l'évènement « la souris est sortie » quand la fenêtre change d'état SOUS le
+curseur -- clic sur Réduire (la fenêtre disparaît alors que la souris est
+encore sur le bouton), sur Agrandir (le bouton se déplace sous le curseur),
+ou bascule vers une autre fenêtre. Le bouton restait alors affiché
+« survolé » au retour. `refresh_hover()` recalcule l'état de survol à partir
+de la position RÉELLE du curseur ; `MainWindow` l'appelle à chaque
+changement d'état ou d'activation de la fenêtre.
 
 Ce qu'on perd en enlevant le cadre natif, et qu'on recrée à la main (sur
 les deux OS, via les API Qt multiplateformes) :
@@ -26,46 +44,76 @@ les deux OS, via les API Qt multiplateformes) :
   - redimensionner depuis les bords -> `QWindow.startSystemResize()`, géré
     dans `MainWindow` (une fenêtre sans cadre n'a plus de bord à saisir par
     défaut, `MainWindow` en réserve un fin autour de tout le contenu).
+  - les coins arrondis -> `ui/window_effects.py`.
 
 Ce qu'on ne recrée PAS (limitation assumée, pas un oubli) :
   - le survol du bouton Agrandir qui propose les « Snap Layouts » de
     Windows 11 : lié au bouton natif lui-même (hit-test DWM spécial), pas
     reproductible sans crochets Win32 bas niveau ;
-  - sur Mac, le survol du GROUPE des trois pastilles qui révèle les trois
-    glyphes en même temps : ici chaque pastille ne révèle son glyphe que
-    lorsqu'elle est survolée individuellement — visuellement très proche,
-    plus simple à implémenter correctement ;
-  - l'ombre portée automatique autour des fenêtres normales, sur les deux OS.
-
-Non testé sur un vrai Mac au moment de l'écriture (voir MACOS_BUILD.md) :
-le code utilise des API Qt documentées comme multiplateformes, mais seul un
-test réel sur macOS confirmera le rendu et le comportement.
+  - l'ombre portée automatique autour des fenêtres normales sous Windows.
 """
 from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPixmap
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QCursor, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QWidget
 
 IS_MAC = sys.platform == "darwin"
+
+STYLE_MAC = "mac"
+STYLE_WINDOWS = "windows"
+STYLES = (STYLE_MAC, STYLE_WINDOWS)
+DEFAULT_STYLE = STYLE_MAC
 
 TITLE_BAR_HEIGHT = 36
 RESIZE_MARGIN = 6          # bord invisible autour de la fenêtre, pour la saisir au redimensionnement
 ICON_COLOR = QColor("#c3ccdb")
+ICON_COLOR_INACTIVE = QColor("#5d6677")
+CLOSE_HOVER_ICON_COLOR = QColor("#ffffff")
 
-# Couleurs des pastilles macOS (rouge/jaune/vert système), approximation des
-# teintes réelles d'AppKit -- suffisamment proches pour être reconnues
-# instantanément sans dépendre d'une ressource système.
+# Teintes des pastilles macOS (rouge/jaune/vert système, version actuelle
+# d'AppKit) : remplissage, liseré un ton plus sombre, et couleur du glyphe
+# révélé au survol -- reprises au plus près du rendu natif.
 MAC_DOT_COLORS = {
     "close": QColor("#FF5F57"),
     "minimize": QColor("#FEBC2E"),
     "maximize": QColor("#28C840"),
 }
+MAC_DOT_BORDERS = {
+    "close": QColor("#E2463F"),
+    "minimize": QColor("#E1A116"),
+    "maximize": QColor("#14AE2E"),
+}
+MAC_GLYPH_COLORS = {
+    "close": QColor("#4D0000"),
+    "minimize": QColor("#995700"),
+    "maximize": QColor("#006500"),
+}
+# Fenêtre inactive : pastilles grises (thème sombre), comme sur macOS.
+MAC_DOT_INACTIVE = QColor("#363c48")
+MAC_DOT_INACTIVE_BORDER = QColor("#454c5a")
+
 MAC_DOT_DIAMETER = 12
-MAC_DOT_SPACING = 8
-MAC_GROUP_LEFT_MARGIN = 12
+MAC_DOT_PAD = 1            # marge autour du cercle, pour que son bord lissé ne soit jamais rogné
+MAC_DOT_SPACING = 8        # écart visible entre deux pastilles (comme macOS)
+MAC_GROUP_LEFT_MARGIN = 8  # + RESIZE_MARGIN de la fenêtre = 14 px du bord, comme macOS
+
+
+def _cursor_inside(widget: QWidget) -> bool:
+    """La souris est-elle RÉELLEMENT sur `widget`, d'après la position du
+    curseur à l'instant -- et pas d'après les évènements Entrée/Sortie,
+    qui peuvent manquer (voir « Survol bloqué » en tête de fichier) ?"""
+    window = widget.window()
+    if not widget.isVisible() or window.isMinimized():
+        return False
+    pos = QCursor.pos()
+    if not widget.rect().contains(widget.mapFromGlobal(pos)):
+        return False
+    # Une autre fenêtre (boîte de dialogue, autre logiciel…) par-dessus ?
+    top = QApplication.widgetAt(pos)
+    return top is not None and (top is widget or widget.isAncestorOf(top) or top.window() is window)
 
 
 class TitleBarButton(QPushButton):
@@ -81,15 +129,25 @@ class TitleBarButton(QPushButton):
     def __init__(self, kind: str, parent=None):
         super().__init__(parent)
         self.kind = kind  # "minimize" | "maximize" | "restore" | "close"
+        self._window_active = True
         self.setObjectName("titleBarClose" if kind == "close" else "titleBarButton")
         self.setFixedSize(46, TITLE_BAR_HEIGHT)
         self.setCursor(Qt.ArrowCursor)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setAttribute(Qt.WA_Hover, True)  # :hover du QSS, même sans feuille de style chargée
         self._set_tooltip()
 
     def set_kind(self, kind: str) -> None:
         self.kind = kind
         self._set_tooltip()
+        self.update()
+
+    def set_window_active(self, active: bool) -> None:
+        self._window_active = active
+        self.update()
+
+    def refresh_hover(self) -> None:
+        self.setAttribute(Qt.WA_UnderMouse, _cursor_inside(self))
         self.update()
 
     def _set_tooltip(self) -> None:
@@ -99,10 +157,17 @@ class TitleBarButton(QPushButton):
 
     def paintEvent(self, event) -> None:  # noqa: N802 - API Qt
         super().paintEvent(event)  # fond + survol viennent du QSS
+        hovered = self.underMouse() or self.isDown()
+        if self.kind == "close" and hovered:
+            color = CLOSE_HOVER_ICON_COLOR  # croix blanche sur fond rouge, comme Windows
+        elif self._window_active or hovered:
+            color = ICON_COLOR
+        else:
+            color = ICON_COLOR_INACTIVE  # fenêtre inactive : glyphes atténués, comme Windows
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        pen = painter.pen()
-        pen.setColor(ICON_COLOR)
+        pen = QPen(color)
         pen.setWidthF(1.2)
         painter.setPen(pen)
 
@@ -110,76 +175,195 @@ class TitleBarButton(QPushButton):
         half = 4.5  # demi-taille du glyphe, en pixels
 
         if self.kind == "minimize":
-            painter.drawLine(int(cx - half), int(cy), int(cx + half), int(cy))
+            # Aligné sur un demi-pixel : un trait horizontal fin tracé pile
+            # entre deux rangées de pixels serait étalé sur les deux, donc flou.
+            y = int(cy) + 0.5
+            painter.drawLine(QPointF(cx - half, y), QPointF(cx + half, y))
         elif self.kind == "maximize":
-            painter.drawRect(int(cx - half), int(cy - half), int(half * 2), int(half * 2))
+            painter.drawRect(QRectF(cx - half, cy - half, half * 2, half * 2))
         elif self.kind == "restore":
-            offset = 2.5
-            back = half - 1.5
-            painter.drawRect(int(cx - back + offset), int(cy - back - offset), int(back * 2), int(back * 2))
-            painter.drawRect(int(cx - back - offset), int(cy - back + offset), int(back * 2), int(back * 2))
+            # Deux carrés décalés, comme l'icône Windows : le carré avant en
+            # entier, du carré arrière seulement ce qui dépasse (haut, droite
+            # et deux petites amorces).
+            size = half * 2 - 2.5
+            off = 2.0
+            front = QRectF(cx - half, cy - half + off, size, size)
+            bx0, by0 = front.left() + off, front.top() - off
+            bx1, by1 = bx0 + size, by0 + size
+            painter.drawRect(front)
+            painter.drawLine(QPointF(bx0, by0), QPointF(bx1, by0))
+            painter.drawLine(QPointF(bx1, by0), QPointF(bx1, by1))
+            painter.drawLine(QPointF(bx0, by0), QPointF(bx0, front.top()))
+            painter.drawLine(QPointF(bx1, by1), QPointF(front.right(), by1))
         elif self.kind == "close":
-            painter.drawLine(int(cx - half), int(cy - half), int(cx + half), int(cy + half))
-            painter.drawLine(int(cx - half), int(cy + half), int(cx + half), int(cy - half))
+            painter.drawLine(QPointF(cx - half, cy - half), QPointF(cx + half, cy + half))
+            painter.drawLine(QPointF(cx - half, cy + half), QPointF(cx + half, cy - half))
 
 
 class MacTrafficLightButton(QPushButton):
     """
-    Pastille rouge/jaune/verte — présentation macOS.
+    Une pastille rouge/jaune/verte — présentation macOS.
 
-    Toujours dessinée en couleur pleine ; le glyphe (×, −, +) n'apparaît
-    qu'au survol de CETTE pastille précise, comme une approximation simple
-    du comportement natif (qui révèle les trois glyphes ensemble dès qu'on
-    survole le groupe -- voir la note en tête de fichier).
+    Son apparence dépend de son GROUPE (`MacTrafficLights`) : glyphe visible
+    dès que le groupe est survolé (pas seulement cette pastille), gris quand
+    la fenêtre est inactive -- voir le docstring du module.
     """
 
-    def __init__(self, kind: str, parent=None):
-        super().__init__(parent)
+    def __init__(self, kind: str, group: "MacTrafficLights"):
+        super().__init__(group)
         self.kind = kind  # "close" | "minimize" | "maximize"
-        self.setFixedSize(MAC_DOT_DIAMETER, MAC_DOT_DIAMETER)
+        self._group = group
+        self._maximized = False
+        size = MAC_DOT_DIAMETER + 2 * MAC_DOT_PAD
+        self.setFixedSize(size, size)
         self.setCursor(Qt.ArrowCursor)
         self.setFocusPolicy(Qt.NoFocus)
         self.setFlat(True)
-        self.setStyleSheet("background: transparent; border: none;")
-        self.setToolTip({"close": "Fermer", "minimize": "Réduire", "maximize": "Agrandir/Restaurer"}[self.kind])
+        self.setStyleSheet("background: transparent; border: none; padding: 0px;")
+        self._set_tooltip()
+
+    def set_maximized(self, maximized: bool) -> None:
+        self._maximized = maximized
+        self._set_tooltip()
+        self.update()
+
+    def _set_tooltip(self) -> None:
+        if self.kind == "maximize":
+            self.setToolTip("Restaurer" if self._maximized else "Agrandir")
+        else:
+            self.setToolTip({"close": "Fermer", "minimize": "Réduire"}[self.kind])
 
     def enterEvent(self, event) -> None:  # noqa: N802 - API Qt
-        self.update()
+        # Filet de sécurité : le groupe reçoit normalement son propre
+        # évènement d'entrée, mais arriver directement sur une pastille ne
+        # doit jamais laisser les glyphes cachés.
+        self._group.set_hovered(True)
         super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:  # noqa: N802 - API Qt
-        self.update()
-        super().leaveEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - API Qt
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(MAC_DOT_COLORS[self.kind])
-        painter.drawEllipse(0, 0, MAC_DOT_DIAMETER, MAC_DOT_DIAMETER)
 
-        if self.underMouse():
-            pen = painter.pen()
-            pen.setColor(QColor(0, 0, 0, 130))
-            pen.setWidthF(1.2)
+        hovered = self._group.is_hovered()
+        lit = hovered or self._group.is_window_active()
+        if lit:
+            fill = QColor(MAC_DOT_COLORS[self.kind])
+            border = QColor(MAC_DOT_BORDERS[self.kind])
+            if self.isDown():
+                fill = fill.darker(125)
+                border = border.darker(125)
+        else:
+            fill, border = MAC_DOT_INACTIVE, MAC_DOT_INACTIVE_BORDER
+
+        rect = QRectF(MAC_DOT_PAD, MAC_DOT_PAD, MAC_DOT_DIAMETER, MAC_DOT_DIAMETER)
+        painter.setPen(QPen(border, 0.8))
+        painter.setBrush(fill)
+        painter.drawEllipse(rect.adjusted(0.4, 0.4, -0.4, -0.4))
+
+        if hovered:
+            self._draw_glyph(painter, rect.center())
+
+    def _draw_glyph(self, painter: QPainter, center: QPointF) -> None:
+        color = QColor(MAC_GLYPH_COLORS[self.kind])
+        if self.isDown():
+            color = color.darker(140)
+        cx, cy = center.x(), center.y()
+        pen = QPen(color)
+        pen.setCapStyle(Qt.RoundCap)
+
+        if self.kind == "close":
+            pen.setWidthF(1.3)
             painter.setPen(pen)
-            cx = cy = MAC_DOT_DIAMETER / 2
-            half = 2.6
-            if self.kind == "close":
-                painter.drawLine(int(cx - half), int(cy - half), int(cx + half), int(cy + half))
-                painter.drawLine(int(cx - half), int(cy + half), int(cx + half), int(cy - half))
-            elif self.kind == "minimize":
-                painter.drawLine(int(cx - half), int(cy), int(cx + half), int(cy))
-            elif self.kind == "maximize":
-                painter.drawLine(int(cx - half), int(cy), int(cx + half), int(cy))
-                painter.drawLine(int(cx), int(cy - half), int(cx), int(cy + half))
+            half = 2.9
+            painter.drawLine(QPointF(cx - half, cy - half), QPointF(cx + half, cy + half))
+            painter.drawLine(QPointF(cx - half, cy + half), QPointF(cx + half, cy - half))
+        elif self.kind == "minimize":
+            pen.setWidthF(1.5)
+            painter.setPen(pen)
+            half = 3.6
+            painter.drawLine(QPointF(cx - half, cy), QPointF(cx + half, cy))
+        elif self.kind == "maximize":
+            # Deux triangles en diagonale, comme le bouton vert de macOS :
+            # pointes vers l'extérieur pour agrandir, vers l'intérieur pour
+            # restaurer une fenêtre déjà agrandie.
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            if self._maximized:
+                a, b = 0.6, 4.0
+                painter.drawPolygon(QPolygonF([QPointF(cx - a, cy - a), QPointF(cx - a, cy - b), QPointF(cx - b, cy - a)]))
+                painter.drawPolygon(QPolygonF([QPointF(cx + a, cy + a), QPointF(cx + a, cy + b), QPointF(cx + b, cy + a)]))
+            else:
+                a, b = 3.3, 1.5
+                painter.drawPolygon(QPolygonF([QPointF(cx - a, cy - a), QPointF(cx + b, cy - a), QPointF(cx - a, cy + b)]))
+                painter.drawPolygon(QPolygonF([QPointF(cx + a, cy + a), QPointF(cx - b, cy + a), QPointF(cx + a, cy - b)]))
+
+
+class MacTrafficLights(QWidget):
+    """
+    Le groupe des trois pastilles, dans l'ordre natif Mac (fermer, réduire,
+    agrandir). C'est LUI qui porte l'état de survol : entrer n'importe où
+    dans le groupe (pastilles ou petits espaces entre elles) révèle les
+    trois glyphes à la fois, comme sur macOS.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hovered = False
+        self._window_active = True
+        self.setFixedHeight(TITLE_BAR_HEIGHT)
+
+        layout = QHBoxLayout(self)
+        pad = MAC_DOT_PAD
+        layout.setContentsMargins(MAC_GROUP_LEFT_MARGIN - pad, 0, MAC_DOT_SPACING - pad, 0)
+        layout.setSpacing(MAC_DOT_SPACING - 2 * pad)
+
+        self.close_button = MacTrafficLightButton("close", self)
+        self.minimize_button = MacTrafficLightButton("minimize", self)
+        self.maximize_button = MacTrafficLightButton("maximize", self)
+        for button in self.buttons():
+            layout.addWidget(button, 0, Qt.AlignVCenter)
+
+    def buttons(self) -> tuple[MacTrafficLightButton, ...]:
+        return (self.close_button, self.minimize_button, self.maximize_button)
+
+    def is_hovered(self) -> bool:
+        return self._hovered
+
+    def is_window_active(self) -> bool:
+        return self._window_active
+
+    def set_hovered(self, hovered: bool) -> None:
+        if hovered != self._hovered:
+            self._hovered = hovered
+            for button in self.buttons():
+                button.update()
+
+    def set_window_active(self, active: bool) -> None:
+        if active != self._window_active:
+            self._window_active = active
+            for button in self.buttons():
+                button.update()
+
+    def set_maximized(self, maximized: bool) -> None:
+        self.maximize_button.set_maximized(maximized)
+
+    def refresh_hover(self) -> None:
+        self.set_hovered(_cursor_inside(self))
+
+    def enterEvent(self, event) -> None:  # noqa: N802 - API Qt
+        self.set_hovered(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 - API Qt
+        self.set_hovered(False)
+        super().leaveEvent(event)
 
 
 class TitleBar(QWidget):
     """
-    Icône + titre + boutons de fenêtre, avec déplacement au glisser.
+    Titre + boutons de fenêtre, avec déplacement au glisser.
 
-    Présentation choisie à la construction selon `sys.platform` (voir le
+    Présentation choisie à la construction (`button_style`, voir le
     docstring du module) ; interface publique identique des deux côtés.
     """
 
@@ -187,14 +371,16 @@ class TitleBar(QWidget):
     maximize_clicked = Signal()
     close_clicked = Signal()
 
-    def __init__(self, window: QWidget, title: str = "TRANSLAX"):
+    def __init__(self, window: QWidget, title: str = "TRANSLAX", button_style: str = DEFAULT_STYLE):
         super().__init__(window)
         self._window = window
         self.setObjectName("titleBar")
         self.setFixedHeight(TITLE_BAR_HEIGHT)
         self.icon_label: QLabel | None = None
+        self.traffic_lights: MacTrafficLights | None = None
+        self.button_style = button_style if button_style in STYLES else DEFAULT_STYLE
 
-        if IS_MAC:
+        if self.button_style == STYLE_MAC:
             self._build_mac(title)
         else:
             self._build_windows(title)
@@ -233,25 +419,17 @@ class TitleBar(QWidget):
     # ---------------------------------------------------------------- Mac
     def _build_mac(self, title: str) -> None:
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(MAC_GROUP_LEFT_MARGIN, 0, MAC_GROUP_LEFT_MARGIN, 0)
-        layout.setSpacing(MAC_DOT_SPACING)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # Ordre natif Mac : fermer, réduire, agrandir -- de gauche à droite.
-        self.close_button = MacTrafficLightButton("close")
-        self.minimize_button = MacTrafficLightButton("minimize")
-        self.maximize_button = MacTrafficLightButton("maximize")
+        self.traffic_lights = MacTrafficLights(self)
+        self.close_button = self.traffic_lights.close_button
+        self.minimize_button = self.traffic_lights.minimize_button
+        self.maximize_button = self.traffic_lights.maximize_button
         self.close_button.clicked.connect(self.close_clicked)
         self.minimize_button.clicked.connect(self.minimize_clicked)
         self.maximize_button.clicked.connect(self.maximize_clicked)
-        for button in (self.close_button, self.minimize_button, self.maximize_button):
-            layout.addWidget(button)
-
-        # Largeur du groupe de pastilles, pour équilibrer un espaceur
-        # invisible du même poids à droite -- sans ça, le titre "centré"
-        # paraîtrait décalé vers la droite (le centre du widget entier
-        # n'est pas le centre de l'espace qui reste une fois les pastilles
-        # posées à gauche).
-        group_width = 3 * MAC_DOT_DIAMETER + 2 * MAC_DOT_SPACING
+        layout.addWidget(self.traffic_lights)
 
         layout.addStretch()
         self.title_label = QLabel(title)
@@ -260,29 +438,53 @@ class TitleBar(QWidget):
         layout.addWidget(self.title_label)
         layout.addStretch()
 
-        spacer = QWidget()
-        spacer.setFixedWidth(group_width)
-        spacer.setAttribute(Qt.WA_TransparentForMouseEvents)
-        layout.addWidget(spacer)
+        # Espace vide de la largeur du groupe de pastilles, à droite : sans
+        # lui, le titre « centré » paraîtrait décalé vers la droite (le centre
+        # de l'espace restant n'est pas le centre de la barre). Un simple
+        # espacement de layout, pas un widget : un QWidget vide recevait le
+        # fond général du QSS et dessinait un bloc plus clair au bout de la barre.
+        layout.addSpacing(self.traffic_lights.sizeHint().width())
 
     # ------------------------------------------------------------- public
     def set_icon(self, pixmap: QPixmap) -> None:
-        """Sans effet sur Mac : la convention native n'affiche pas d'icône
-        dans la barre de titre (le Dock en tient déjà lieu)."""
+        """Sans effet en présentation Mac : la convention native n'affiche
+        pas d'icône dans la barre de titre (le Dock / la barre des tâches
+        en tient déjà lieu)."""
         if self.icon_label is not None:
             self.icon_label.setPixmap(pixmap)
 
     def set_maximized(self, maximized: bool) -> None:
         """
         Reflète l'état réel de la fenêtre (double-clic, bouton, ou -- sous
-        Windows -- Win+Haut/snap).
-
-        Sous Windows, bascule l'icône du bouton Agrandir vers l'icône
-        Restaurer. Sous Mac, la pastille verte ne change pas d'apparence
-        (elle ne le fait pas non plus nativement) -- rien à faire.
+        Windows -- Win+Haut/snap) : icône Agrandir/Restaurer en présentation
+        Windows, flèches du vert tournées vers l'intérieur/l'extérieur en
+        présentation Mac.
         """
-        if not IS_MAC:
+        if self.traffic_lights is not None:
+            self.traffic_lights.set_maximized(maximized)
+        else:
             self.maximize_button.set_kind("restore" if maximized else "maximize")
+
+    def set_window_active(self, active: bool) -> None:
+        """Fenêtre au premier plan ou non : pastilles grises / glyphes et
+        titre atténués quand elle ne l'est pas, comme les fenêtres natives."""
+        if self.traffic_lights is not None:
+            self.traffic_lights.set_window_active(active)
+        else:
+            for button in (self.minimize_button, self.maximize_button, self.close_button):
+                button.set_window_active(active)
+        self.title_label.setProperty("inactive", not active)
+        self.title_label.style().unpolish(self.title_label)
+        self.title_label.style().polish(self.title_label)
+
+    def refresh_hover(self) -> None:
+        """Recalcule le survol d'après la position réelle du curseur (voir
+        « Survol bloqué » en tête de fichier)."""
+        if self.traffic_lights is not None:
+            self.traffic_lights.refresh_hover()
+        else:
+            for button in (self.minimize_button, self.maximize_button, self.close_button):
+                button.refresh_hover()
 
     # ---------------------------------------------------------- souris
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - API Qt

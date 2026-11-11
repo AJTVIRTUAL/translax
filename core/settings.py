@@ -165,6 +165,30 @@ def set_openai_api_key(key: str | None) -> None:
     save_settings(data)
 
 
+WINDOW_BUTTON_STYLES = ("mac", "windows")
+DEFAULT_WINDOW_BUTTON_STYLE = "mac"
+
+
+def get_window_button_style() -> str:
+    """
+    Présentation des boutons Fermer/Réduire/Agrandir (voir ui/titlebar.py) :
+    "mac" (pastilles rouge/jaune/verte, glyphes révélés au survol -- par
+    défaut depuis le 10/11/2026, demande explicite de l'utilisateur :
+    « comme pour les logiciels Apple ») ou "windows" (boutons classiques à
+    droite). Une valeur inconnue retombe sur le défaut.
+    """
+    value = load_settings().get("window_button_style")
+    return value if value in WINDOW_BUTTON_STYLES else DEFAULT_WINDOW_BUTTON_STYLE
+
+
+def set_window_button_style(style: str) -> None:
+    if style not in WINDOW_BUTTON_STYLES:
+        raise ValueError(f"Style de boutons inconnu : {style!r}")
+    data = load_settings()
+    data["window_button_style"] = style
+    save_settings(data)
+
+
 def get_pending_jobs() -> list[dict]:
     """
     Toutes les traductions lancées depuis l'interface et pas encore

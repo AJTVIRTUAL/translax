@@ -690,7 +690,12 @@ def main() -> int:
             # vraiment, ce choix doit survivre intact -- pas être écrasé par
             # le "600M" du job d'origine.
             other_idx = window_other_engine.model_combo.findData("1.3B")
+            # 1.3B est un profil « usage personnel » : sans ce drapeau, le
+            # changement ouvre l'avertissement modal (_on_model_selected) --
+            # jamais fermé en mode offscreen, le test restait bloqué ici.
+            window_other_engine._suppress_model_notice = True
             window_other_engine.model_combo.setCurrentIndex(other_idx)
+            window_other_engine._suppress_model_notice = False
             app.processEvents()  # déclenche le singleShot(0) de __init__, une seule fois
             check("aucun thread démarré (l'utilisateur doit choisir puis cliquer Traduire)",
                   window_other_engine.thread is None)
@@ -1090,6 +1095,40 @@ def main() -> int:
                   with_backup_path.read_text(encoding="utf-8") == original_text)
             check("le bouton se désactive une fois la sauvegarde consommée",
                   not hub_window.undo_button.isEnabled())
+
+            print("  11b. Outil « Aérer un document déjà traduit » (10/11/2026)")
+            check("case « Aérer les paragraphes » cochée par défaut", hub_window.split_check.isChecked())
+            long_par = " ".join(
+                f"Ceci est la phrase numéro {i}, assez longue pour remplir une bonne partie de la ligne."
+                for i in range(1, 30)
+            )
+            reflow_path = out_dir / "outil_aerer.md"
+            reflow_path.write_text(long_par + "\n", encoding="utf-8")
+
+            # Fichier dont la traduction n'est pas terminée : jamais réécrit.
+            state_mod.save_state(reflow_path, state_mod.JobState(
+                source_path="x", source_hash="x", total=10, done=3,
+                src_lang="eng_Latn", tgt_lang="fra_Latn", model="600M", strategy="blocks",
+            ))
+            hub_window.reflow_path_edit.setText(str(reflow_path))
+            check("traduction en cours -> bouton Aérer désactivé",
+                  not hub_window.reflow_button.isEnabled())
+            check("message explicite : attendre la fin",
+                  "pas encore terminée" in hub_window.reflow_status_label.text(),
+                  f"({hub_window.reflow_status_label.text()!r})")
+
+            state_mod.state_path(reflow_path).unlink()
+            hub_window.reflow_path_edit.setText("")
+            hub_window.reflow_path_edit.setText(str(reflow_path))
+            check("fichier terminé -> bouton Aérer activé", hub_window.reflow_button.isEnabled())
+            hub_window.reflow_button.click()
+            check("thread d'aération terminé", wait_for_named_thread(hub_window, "_reflow_thread"))
+            app.processEvents()
+            aired = [b for b in reflow_path.read_text(encoding="utf-8").split("\n\n") if b.strip()]
+            check("le document a été aéré (plusieurs paragraphes)", len(aired) > 1, f"({len(aired)})")
+            check("le PDF a été généré à côté", reflow_path.with_suffix(".pdf").exists())
+            check("le résultat est affiché", "aérés" in hub_window.reflow_status_label.text(),
+                  f"({hub_window.reflow_status_label.text()!r})")
         finally:
             hub_window.close()
 
@@ -1466,8 +1505,8 @@ def main() -> int:
             b for b in settings_page_widget.findChildren(QPushButton) if b.objectName() == "infoButton"
         ]
         check("chaque carte à texte explicatif a bien son bouton info "
-              "(Matériel, Mises à jour, À propos, Clés API, Cache)",
-              len(settings_info_buttons) == 5, f"({len(settings_info_buttons)})")
+              "(Apparence, Matériel, Mises à jour, À propos, Clés API, Cache)",
+              len(settings_info_buttons) == 6, f"({len(settings_info_buttons)})")
 
         real_dialog_exec = InfoDialog.exec
         opened_titles: list[str] = []
@@ -1478,7 +1517,7 @@ def main() -> int:
         finally:
             InfoDialog.exec = real_dialog_exec
         check("chaque bouton ouvre bien un InfoDialog distinct, avec un titre",
-              len(opened_titles) == 5 and all(opened_titles), f"({opened_titles!r})")
+              len(opened_titles) == 6 and all(opened_titles), f"({opened_titles!r})")
 
         window._navigate_to(PAGE_TRANSLATE)
         flush_page_animation(window, PAGE_TRANSLATE)

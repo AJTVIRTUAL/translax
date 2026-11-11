@@ -11,12 +11,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from ui import window_effects  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
 
 # Éditeur affiché sur l'écran de démarrage (demande explicite de
@@ -34,7 +35,7 @@ def resource_path(relative: str) -> Path:
     return base / relative
 
 
-def _build_splash_pixmap(icon_path: Path) -> QPixmap:
+def _build_splash_pixmap(icon_path: Path, rounded: bool = False) -> QPixmap:
     """
     Petite zone rectangulaire dessinée à la volée (pas un fichier image à
     part) : logo centré, nom du logiciel, éditeur -- demande explicite de
@@ -42,15 +43,25 @@ def _build_splash_pixmap(icon_path: Path) -> QPixmap:
     (fond `#12151c`, bordure de carte `#262d3a`, texte `#e6eaf2`) pour que
     ce premier écran ait déjà le thème de l'appli, avant même que la
     feuille de style ne soit chargée.
+
+    `rounded` : coins arrondis dessinés dans l'image elle-même, sur fond
+    transparent (macOS, voir ui/window_effects.py) -- sous Windows 11, c'est
+    le système qui arrondit la fenêtre du splash, l'image reste rectangulaire.
     """
     width, height = 420, 260
     pixmap = QPixmap(width, height)
-    pixmap.fill(QColor("#12151c"))
+    pixmap.fill(Qt.transparent if rounded else QColor("#12151c"))
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setPen(QPen(QColor("#262d3a"), 1))
-    painter.drawRect(0, 0, width - 1, height - 1)
+    if rounded:
+        painter.setBrush(QColor("#12151c"))
+        radius = window_effects.WINDOW_RADIUS
+        painter.drawRoundedRect(QRectF(0.5, 0.5, width - 1, height - 1), radius, radius)
+        painter.setBrush(Qt.NoBrush)
+    else:
+        painter.drawRect(0, 0, width - 1, height - 1)
 
     if icon_path.exists():
         logo = QIcon(str(icon_path)).pixmap(72, 72)
@@ -87,8 +98,12 @@ def main() -> int:
     # affichage réel immédiatement : sans lui, Qt ne peindrait le splash
     # qu'au prochain passage dans la boucle d'évènements, potentiellement
     # après que `MainWindow()` ait déjà fini de se construire.
-    splash = QSplashScreen(_build_splash_pixmap(icon_path))
+    painted_corners = window_effects.uses_painted_corners()
+    splash = QSplashScreen(_build_splash_pixmap(icon_path, rounded=painted_corners))
+    if painted_corners:
+        splash.setAttribute(Qt.WA_TranslucentBackground)
     splash.show()
+    window_effects.apply_native_corners(splash, rounded=True)  # Windows 11 ; sans effet ailleurs
     app.processEvents()
 
     stylesheet = resource_path("ui/styles.qss")

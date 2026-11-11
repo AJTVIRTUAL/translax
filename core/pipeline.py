@@ -39,6 +39,7 @@ from . import (
     extract,
     layout as layout_mod,
     page_cleanup,
+    paragraphs as paragraphs_mod,
     pdf_export,
     postprocess,
     segment as segment_mod,
@@ -81,6 +82,12 @@ class Job:
     # utilisé pour la reprise/l'état (voir core/pdf_export.py) : le PDF est
     # généré EN PLUS, à la toute fin, jamais à la place.
     output_format: str = "md"
+    # Aération des paragraphes à la fin (demande explicite de l'utilisateur,
+    # 10/11/2026) : chaque paragraphe long est redécoupé aux fins de phrase
+    # pour ne jamais dépasser `max_paragraph_lines` lignes du PDF -- même
+    # découpage pour le .md et le PDF (voir core/paragraphs.py).
+    split_paragraphs: bool = True
+    max_paragraph_lines: int = paragraphs_mod.DEFAULT_MAX_LINES
 
     def resolved_output(self) -> Path:
         return Path(self.output_path) if self.output_path else default_output_path(self.input_path)
@@ -94,6 +101,7 @@ class Result:
     resumed_from: int = 0
     cancelled: bool = False
     cleanup_report: postprocess.CleanupReport | None = None
+    paragraph_report: paragraphs_mod.SplitReport | None = None   # aération des paragraphes (voir core/paragraphs.py)
     page_cleanup_report: page_cleanup.PageCleanupReport | None = None
     layout_report: "layout_mod.LayoutReport | None" = None   # analyse de mise en page (PDF seulement)
     vision_ocr_report: vision_ocr.VisionOcrReport | None = None
@@ -129,6 +137,27 @@ def _maybe_export_pdf(job: "Job", md_path: Path, status, notes: list[str]) -> Pa
         return None
     status("Export PDF terminé.")
     return pdf_path
+
+
+def _maybe_split_paragraphs(job: "Job", md_path: Path, status, notes: list[str]) -> paragraphs_mod.SplitReport | None:
+    """
+    Aère les paragraphes trop longs du .md terminé (voir core/paragraphs.py),
+    APRÈS le nettoyage typographique -- celui-ci repose sur un alignement
+    1:1 entre blocs du .md et segments source, que le découpage casserait --
+    et AVANT l'export PDF, qui hérite ainsi des mêmes paragraphes. Comme
+    pour le PDF, un échec ne fait jamais échouer le job : le .md non aéré
+    reste un résultat parfaitement valide.
+    """
+    if not job.split_paragraphs:
+        return None
+    status(f"Aération des paragraphes ({job.max_paragraph_lines} lignes max)…")
+    try:
+        report = paragraphs_mod.split_file(md_path, max_lines=job.max_paragraph_lines)
+    except Exception as exc:  # noqa: BLE001 - jamais faire échouer le job pour la mise en forme
+        notes.append(f"Aération des paragraphes échouée ({exc}) -- le fichier .md reste tel quel.")
+        return None
+    status(report.summary())
+    return report
 
 
 def _sanitize_filename(name: str) -> str:
@@ -507,6 +536,7 @@ def run_job(
             status("Nettoyage des titres et des traits d'union…")
             report = postprocess.cleanup_file(segments, out_path, apply=True)
             status(report.summary())
+        paragraph_report = _maybe_split_paragraphs(job, out_path, status, notes)
         pdf_path = _maybe_export_pdf(job, out_path, status, notes)
         return Result(
             output_path=out_path,
@@ -515,6 +545,7 @@ def run_job(
             resumed_from=start_index,
             cancelled=False,
             cleanup_report=report,
+            paragraph_report=paragraph_report,
             page_cleanup_report=page_report,
             layout_report=layout_report,
             vision_ocr_report=vision_report,
@@ -599,6 +630,9 @@ def run_job(
         report = postprocess.cleanup_file(segments, out_path, apply=True)
         status(report.summary())
 
+    # --- Aération des paragraphes (6 lignes max) ----------------------------
+    paragraph_report = _maybe_split_paragraphs(job, out_path, status, notes) if not cancelled else None
+
     # --- Renommage selon le titre traduit (filet de sécurité) ---------------
     # Ne s'applique en pratique qu'à un job REPRIS sans être passé par le
     # renommage précoce ci-dessus (démarré avant cette fonctionnalité, ou
@@ -627,6 +661,7 @@ def run_job(
         resumed_from=start_index,
         cancelled=cancelled,
         cleanup_report=report,
+        paragraph_report=paragraph_report,
         page_cleanup_report=page_report,
         layout_report=layout_report,
         vision_ocr_report=vision_report,

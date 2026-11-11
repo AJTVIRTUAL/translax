@@ -56,6 +56,12 @@ QLabel#titleBarText {
     letter-spacing: 1px;
 }
 
+/* Fenêtre pas au premier plan : titre atténué, comme les fenêtres natives
+   (voir TitleBar.set_window_active). */
+QLabel#titleBarText[inactive="true"] {
+    color: #4f586a;
+}
+
 /* object name plutôt que le type QPushButton seul : la spécificité l'emporte
    sur la règle générale QPushButton plus bas dans ce fichier (fond, bordure,
    coins arrondis, padding) -- ces boutons doivent rester à vif, carrés,

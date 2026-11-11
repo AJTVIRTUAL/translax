@@ -57,8 +57,42 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from core import heartbeat as heartbeat_mod
+from core import paragraphs
+from core import pdf_export
 from core import pipeline
 from core import updater
+
+
+class ReflowWorker(QObject):
+    """
+    Outil « Aérer un document déjà traduit » (page Outils) : redécoupe les
+    paragraphes longs d'un .md existant (voir core/paragraphs.py) et, si
+    demandé, régénère son PDF -- hors du thread principal, un livre entier
+    prenant quelques secondes (mesuré : ~3 s de découpage + ~6 s de PDF
+    pour 150 pages), assez pour que Windows affiche « ne répond pas ».
+    """
+
+    finished = Signal(object)  # (paragraphs.SplitReport, Path du PDF ou None)
+    failed = Signal(str)
+
+    def __init__(self, md_path: Path, *, make_pdf: bool, max_lines: int = paragraphs.DEFAULT_MAX_LINES):
+        super().__init__()
+        self.md_path = Path(md_path)
+        self.make_pdf = make_pdf
+        self.max_lines = max_lines
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = paragraphs.split_file(self.md_path, max_lines=self.max_lines)
+            pdf_path = None
+            if self.make_pdf:
+                pdf_path = self.md_path.with_suffix(".pdf")
+                pdf_export.markdown_file_to_pdf(self.md_path, pdf_path)
+        except Exception as exc:  # noqa: BLE001 - message lisible plutôt qu'un thread qui meurt en silence
+            self.failed.emit(f"{type(exc).__name__} : {exc}")
+            return
+        self.finished.emit((report, pdf_path))
 
 
 class TranslationWorker(QObject):

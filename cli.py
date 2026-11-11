@@ -21,7 +21,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from core import pipeline, translate
+from core import paragraphs, pipeline, translate
 from core.languages import DEFAULT_SOURCE, DEFAULT_TARGET
 
 
@@ -52,6 +52,18 @@ def main() -> int:
     parser.add_argument("--strategy", default="auto", choices=["auto", "blocks", "flow"])
     parser.add_argument("--limit", type=int, default=None, help="ne traiter que les N premiers segments (test)")
     parser.add_argument("--no-cleanup", action="store_true", help="ne pas passer le nettoyage final")
+    parser.add_argument(
+        "--no-split",
+        action="store_true",
+        help="ne pas aérer les paragraphes longs à la fin (par défaut : 6 lignes max, coupés aux fins de phrase)",
+    )
+    parser.add_argument(
+        "--max-lines",
+        type=int,
+        default=paragraphs.DEFAULT_MAX_LINES,
+        help=f"lignes max par paragraphe lors de l'aération (défaut {paragraphs.DEFAULT_MAX_LINES})",
+    )
+    parser.add_argument("--pdf", action="store_true", help="générer aussi un PDF à côté du .md")
     parser.add_argument("--restart", action="store_true", help="repartir de zéro même si une reprise est possible")
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument(
@@ -77,6 +89,9 @@ def main() -> int:
         model_key=args.model,
         strategy=args.strategy,
         cleanup=not args.no_cleanup,
+        split_paragraphs=not args.no_split,
+        max_paragraph_lines=max(1, args.max_lines),
+        output_format="pdf" if args.pdf else "md",
         translate_title=not args.no_title_translation,
         resume="restart" if args.restart else "auto",
         limit=args.limit,

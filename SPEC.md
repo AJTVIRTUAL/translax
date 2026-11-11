@@ -3089,6 +3089,114 @@ modèle ne doit pas vivre dans le processus de l'interface).
   refusée (403), langues, glossaire créé, utilisé puis supprimé, usage.
   Refus de `--engine 600M` / `600M-ct2` vérifié (code de sortie 2).
 
+## 5 tricies novies. Paragraphes aérés (6 lignes max), PDF agrandi, fenêtre arrondie et pastilles Apple (ajouté le 10/11/2026)
+
+Demande explicite de l'utilisateur : « à la fin d'une traduction, sépare
+chaque paragraphe, 6 lignes max par paragraphe, pour les md et les PDF ;
+rends les textes plus gros [du PDF] ; inspire-toi de substans.app pour la
+séparation des lignes ; arrondis les angles du logiciel quand il n'est pas
+en grand écran, exactement comme les logiciels Apple ; les boutons fermer/
+réduire/agrandir doivent marcher, le survol doit faire apparaître les ×, − ».
+Fait sans arrêter le TRANSLAX.exe qui traduisait un document à ce moment-là
+(ni processus touché, ni `dist/` reconstruit).
+
+### Aération des paragraphes -- `core/paragraphs.py`
+
+- **Logique reprise de substans.app** (`utils/rehypeShortParagraphs.ts`) :
+  coupe uniquement aux fins de phrase (`. ! ? …` + fermants, `« Viens. » Puis`),
+  jamais après une abréviation (`M.`, `Dr.`, initiale, `U.S.`, énumération
+  `1.`), jamais devant une minuscule ; morceaux équilibrés par programmation
+  dynamique (mieux vaut 4 + 4 lignes que 6 + 2).
+- **Différence voulue** : substans compte en caractères (écran de téléphone
+  variable) ; ici une « ligne » est une VRAIE ligne du PDF exporté, mesurée
+  avec les métriques réelles d'Helvetica (`pymupdf.Font("helv")`) sur la
+  largeur réelle de la colonne. Le .md est découpé avec cette même mesure :
+  .md et PDF ont exactement les mêmes paragraphes.
+- **Phrase seule > 6 lignes** (listes sans point, phrases à rallonge) :
+  coupée après `;` `:` `,`, et en dernier recours entre deux mots -- sinon
+  la limite ne serait pas tenue (vu sur un vrai livre : 16 cas, jusqu'à 13
+  lignes).
+- Titres, puces, citations et blocs restreints jamais touchés. Aucun mot
+  ajouté/retiré. Idempotent.
+- **Branché en fin de job** (`pipeline._maybe_split_paragraphs`), APRÈS le
+  nettoyage typographique (qui exige l'alignement 1:1 blocs/segments) et
+  AVANT l'export PDF. `Job.split_paragraphs` (vrai par défaut) /
+  `Job.max_paragraph_lines` (6). Un échec ne fait jamais échouer le job.
+- **Réversible** : même sauvegarde `.avant_nettoyage` que le nettoyage
+  (créée seulement si absente) -- l'outil « Annuler le nettoyage » restaure
+  le fichier d'avant TOUT le post-traitement.
+- Interface : case « Aérer les paragraphes à la fin » (cochée par défaut,
+  mémorisée dans le job en attente pour la reprise ; un job mémorisé par une
+  version antérieure est aéré par défaut). Page Outils : nouvel outil
+  « Aérer un document déjà traduit » (+ PDF optionnel), dans un thread
+  (`ui/worker.py::ReflowWorker`) ; refuse un fichier dont la traduction
+  n'est pas terminée (état de reprise non fini) -- ne jamais réécrire un
+  .md qu'un autre TRANSLAX est en train d'écrire. Bouton du hall renommé
+  « AÉRER / ANNULER NETTOYAGE ». CLI : `--no-split`, `--max-lines N`, `--pdf`.
+
+### PDF -- `core/pdf_export.py`
+
+- Corps 11 pt -> **14 pt**, interligne 1,5, titres 26/18 pt, marges 0,75
+  pouce, numéros de page « n / total » en bas (gris, 9 pt), titre du
+  document dans les métadonnées.
+- **Piège trouvé** : le moteur HTML de MuPDF ajoute 1 em de marge par défaut
+  au `<body>` (colonne réelle 459 pt au lieu de 487) -- `body { margin: 0 }`
+  obligatoire, sinon la mesure des lignes sous-estime.
+
+### Fenêtre -- `ui/window_effects.py`, `ui/titlebar.py`
+
+- **Coins arrondis hors plein écran** : Windows 11 -> DWM
+  (`DWMWA_WINDOW_CORNER_PREFERENCE` + liseré `DWMWA_BORDER_COLOR`), vérifié
+  réellement sur la fenêtre sans cadre (pixels du coin = bureau derrière ;
+  carré une fois agrandie, arrondi à nouveau après restauration). macOS ->
+  fond transparent + rectangle arrondi dessiné (`paintEvent`), le contenu
+  étant déjà en retrait de `RESIZE_MARGIN`. Windows 10 : carré. Le splash
+  de démarrage est arrondi de la même façon.
+- **Pastilles style Apple par défaut sur tous les OS** (réglage « Boutons
+  de la fenêtre » dans Paramètres > Apparence, appliqué immédiatement,
+  « Classiques — style Windows » au choix) : survoler le GROUPE révèle ×, −
+  et les flèches du vert (vers l'intérieur une fois agrandie), pastilles
+  grises quand la fenêtre est inactive, assombries tant qu'on clique.
+- **Survol « bloqué » corrigé** : Qt rate parfois l'évènement de sortie
+  quand la fenêtre change d'état sous le curseur (Réduire, Agrandir) ;
+  `TitleBar.refresh_hover()` recalcule d'après la position réelle du
+  curseur à chaque changement d'état/activation. Présentation Windows :
+  croix blanche sur fond rouge au survol de Fermer, glyphes atténués quand
+  la fenêtre est inactive, icône Restaurer redessinée façon Windows.
+- Corrigé au passage : faute de frappe non enregistrée dans
+  `main_window.py` (`about_texteé`) qui aurait fait planter l'appli au
+  lancement depuis les sources ; bloc plus clair au bout de la barre de
+  titre Mac (un `QWidget` espaceur recevait le fond général du QSS).
+
+### Vérifié
+
+- `tests/test_paragraphs.py` (nouveau) : tout passe -- dont un rendu PDF
+  réel où aucun paragraphe ne dépasse 6 lignes réelles, et un `run_job`
+  complet (extraction seule) avec et sans aération.
+- Sur un vrai livre traduit (147 pages) : 347 paragraphes découpés en 723,
+  texte identique mot pour mot, 1 211 paragraphes du PDF comparés à la
+  mesure : 0 sous-estimation, max réel = 6 lignes.
+- `test_pdf_export`, `test_pipeline`, `test_settings`, `test_segment`,
+  `test_document_flow` : tout passe.
+- `tests/test_ui.py` : 193 vérifications, tout passe (nouvelle section 11b :
+  outil « Aérer », refus d'un fichier en cours de traduction). Deux
+  corrections du test lui-même : la section 8c restait bloquée pour
+  toujours en mode offscreen (le passage programmatique sur « 1.3B »
+  ouvrait l'avertissement « usage personnel » modal -- blocage antérieur à
+  ce travail), et le décompte des boutons ⓘ passe à 6 (carte Apparence).
+- Fenêtre affichée pour de vrai (réglages isolés) : coins, survol du groupe
+  de pastilles par évènements souris Qt, sortie, survol Fermer (Windows),
+  survol bloqué corrigé, bascule de présentation à chaud.
+- Non vérifié sur un vrai Mac (rendu des coins dessinés et de l'ombre).
+- **Version 1.21.0** (11/11/2026, `stamp_build_date.py --bump minor`) :
+  `dist\TRANSLAX.exe` reconstruit une fois la traduction en cours terminée
+  (ancien exe gardé : `dist\TRANSLAX-1.20.0-sauvegarde.exe`). Exe réel lancé
+  et capturé : coins arrondis, pastilles, nouveau bouton du hall, version
+  affichée. Installeur `TRANSLAX-Setup-1.21.0.exe` construit
+  (`scripts/build_installer.py`) et publié en GitHub Release v1.21.0 --
+  pas testé par une vraie installation (la version installée tournait à ce
+  moment-là).
+
 ## 6. Interface
 
 ```
@@ -3153,8 +3261,8 @@ de l'appli plutôt que le style natif du système.
     sans crochets Win32 bas niveau) ;
   - pas d'ombre portée automatique autour de la fenêtre (perdue avec le
     cadre natif, pas restaurée) ;
-  - coins de fenêtre carrés (pas l'arrondi automatique de Windows 11 sur les
-    fenêtres normales).
+  - ~~coins de fenêtre carrés~~ -- arrondis depuis le 10/11/2026 (voir
+    §5 tricies novies).
 - **Vérifié avec de vraies actions souris simulées** (`SendInput` +
   `startSystemMove`/`Resize`, pas juste des signaux Qt internes) : glisser
   déplace réellement la fenêtre, tirer un bord la redimensionne, Réduire /

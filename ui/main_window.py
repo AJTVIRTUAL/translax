@@ -52,6 +52,7 @@ from core import (
     extract,
     keep_awake,
     page_cleanup,
+    paragraphs,
     pipeline,
     settings as settings_mod,
     state as state_mod,
@@ -62,8 +63,9 @@ from core import (
     vision_ocr,
 )
 from core.languages import DEFAULT_SOURCE, DEFAULT_TARGET, LANGUAGES
-from ui.titlebar import RESIZE_MARGIN, TITLE_BAR_HEIGHT, TitleBar
-from ui.worker import TranslationWorker, UpdateCheckWorker, UpdateDownloadWorker
+from ui import window_effects
+from ui.titlebar import RESIZE_MARGIN, STYLE_MAC, STYLE_WINDOWS, TITLE_BAR_HEIGHT, TitleBar
+from ui.worker import ReflowWorker, TranslationWorker, UpdateCheckWorker, UpdateDownloadWorker
 
 MAX_LOG_LINES = 800
 PROGRESS_ANIMATION_MS = 220  # durée de la transition de la barre de progression : discrète, pas un effet voyant
@@ -599,6 +601,11 @@ class MainWindow(QWidget):
         # (flash, voire perte de l'état) -- ici il n'y a encore jamais eu de
         # show(), donc aucun risque.
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        # macOS : coins arrondis dessinés par paintEvent sur fond transparent
+        # (voir ui/window_effects.py) -- à poser lui aussi avant tout show().
+        # Windows 11 arrondit lui-même la fenêtre (DWM), rien à poser ici.
+        if window_effects.uses_painted_corners():
+            self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle("TRANSLAX")
         self.setMinimumSize(620, 480)
         self.setAcceptDrops(True)
@@ -642,6 +649,9 @@ class MainWindow(QWidget):
         self._update_check_worker: UpdateCheckWorker | None = None
         self._update_download_thread: QThread | None = None
         self._update_download_worker: UpdateDownloadWorker | None = None
+        # Outil « Aérer un document déjà traduit » (page Outils).
+        self._reflow_thread: QThread | None = None
+        self._reflow_worker: ReflowWorker | None = None
         self._keep_awake = keep_awake.KeepAwake()
         self._auto_reboost_done = False
 
@@ -762,8 +772,9 @@ class MainWindow(QWidget):
             self._go_to_extract,
         )
         undo_btn = hub_button(
-            "ANNULER NETTOYAGE",
-            "Annuler le nettoyage des titres et traits d'union sur un fichier déjà traduit.",
+            "AÉRER / ANNULER NETTOYAGE",
+            "Aérer les paragraphes d'un fichier déjà traduit (6 lignes max), "
+            "ou annuler son nettoyage des titres et traits d'union.",
             self._go_to_tools,
         )
         layout.addWidget(translate_btn)
@@ -1070,6 +1081,31 @@ class MainWindow(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
 
+        # Apparence (10/11/2026) : présentation des boutons de fenêtre --
+        # pastilles style Apple par défaut, boutons Windows classiques au
+        # choix. Appliqué immédiatement, mémorisé d'un lancement à l'autre.
+        look_card = Card(
+            "Apparence",
+            info=(
+                "Pastilles (style Apple) : fermer / réduire / agrandir en rouge, jaune et vert à gauche ; "
+                "les symboles ×, − et ⤢ apparaissent au survol. Classiques (style Windows) : boutons à droite."
+            ),
+        )
+        look_row = QHBoxLayout()
+        look_row.setSpacing(10)
+        look_row.addWidget(self._field_label("Boutons de la fenêtre"))
+        self.window_style_combo = NoScrollComboBox()
+        self.window_style_combo.addItem("Pastilles — style Apple", STYLE_MAC)
+        self.window_style_combo.addItem("Classiques — style Windows", STYLE_WINDOWS)
+        style_idx = self.window_style_combo.findData(settings_mod.get_window_button_style())
+        self.window_style_combo.setCurrentIndex(max(0, style_idx))
+        self.window_style_combo.currentIndexChanged.connect(
+            lambda _i: self._set_window_button_style(self.window_style_combo.currentData())
+        )
+        look_row.addWidget(self.window_style_combo, 1)
+        look_card.body.addLayout(look_row)
+        root.addWidget(look_card)
+
         hw_card = Card(
             "Matériel réellement détecté et utilisé",
             info=(
@@ -1213,13 +1249,7 @@ class MainWindow(QWidget):
         outer.setContentsMargins(RESIZE_MARGIN, RESIZE_MARGIN, RESIZE_MARGIN, RESIZE_MARGIN)
         outer.setSpacing(0)
 
-        self.title_bar = TitleBar(self)
-        icon_path = _asset_path("icon.ico")
-        if icon_path.exists():
-            self.title_bar.set_icon(QIcon(str(icon_path)).pixmap(18, 18))
-        self.title_bar.minimize_clicked.connect(self.showMinimized)
-        self.title_bar.maximize_clicked.connect(self._toggle_maximized)
-        self.title_bar.close_clicked.connect(self.close)
+        self.title_bar = self._create_title_bar(settings_mod.get_window_button_style())
         outer.addWidget(self.title_bar)
 
         # Trois écrans (demande explicite de l'utilisateur, 25/08/2026) :
@@ -1419,6 +1449,21 @@ class MainWindow(QWidget):
         # que l'utilisateur l'ait choisi pour CE job précis.
         self.cleanup_check.setChecked(False)
         settings.body.addWidget(self.cleanup_check)
+
+        # Coché par défaut (demande explicite de l'utilisateur, 10/11/2026) :
+        # « sépare chaque paragraphe, 6 lignes max » -- pour le .md comme pour
+        # le PDF, voir core/paragraphs.py. Réversible comme le nettoyage :
+        # même sauvegarde, même outil « Annuler le nettoyage ».
+        self.split_check = QCheckBox(
+            f"Aérer les paragraphes à la fin — {paragraphs.DEFAULT_MAX_LINES} lignes max, coupés entre deux phrases"
+        )
+        self.split_check.setToolTip(
+            "Chaque paragraphe trop long est redécoupé aux fins de phrase, en morceaux équilibrés, "
+            f"pour ne jamais dépasser {paragraphs.DEFAULT_MAX_LINES} lignes dans le PDF. "
+            "Le .md reçoit exactement le même découpage. Aucun mot n'est modifié."
+        )
+        self.split_check.setChecked(True)
+        settings.body.addWidget(self.split_check)
 
         self.extract_only_check = QCheckBox(
             "Extraction seulement — texte source nettoyé, sans traduction"
@@ -1666,6 +1711,47 @@ class MainWindow(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
 
+        # Aérer après coup (10/11/2026) : pour un document traduit AVANT que
+        # l'aération ne soit faite automatiquement en fin de traduction, ou
+        # traduit avec la case décochée -- voir core/paragraphs.py.
+        reflow_card = Card(f"Aérer un document déjà traduit ({paragraphs.DEFAULT_MAX_LINES} lignes max)")
+        reflow_intro = QLabel(
+            "Choisissez un fichier .md déjà traduit : chaque paragraphe trop long est redécoupé "
+            f"entre deux phrases, pour ne jamais dépasser {paragraphs.DEFAULT_MAX_LINES} lignes. "
+            "Aucun mot n'est modifié, et une sauvegarde est gardée (« Annuler le nettoyage » ci-dessous la restaure)."
+        )
+        reflow_intro.setWordWrap(True)
+        reflow_card.body.addWidget(reflow_intro)
+
+        reflow_row = QHBoxLayout()
+        self.reflow_path_edit = QLineEdit()
+        self.reflow_path_edit.setPlaceholderText("Fichier .md à aérer…")
+        self.reflow_path_edit.textChanged.connect(self._update_reflow_status)
+        browse_reflow_btn = QPushButton("Parcourir…")
+        browse_reflow_btn.clicked.connect(self._pick_reflow_file)
+        reflow_row.addWidget(self.reflow_path_edit, 1)
+        reflow_row.addWidget(browse_reflow_btn)
+        reflow_card.body.addLayout(reflow_row)
+
+        self.reflow_pdf_check = QCheckBox("Générer aussi le PDF (texte agrandi, numéros de page)")
+        self.reflow_pdf_check.setChecked(True)
+        reflow_card.body.addWidget(self.reflow_pdf_check)
+
+        self.reflow_status_label = QLabel("")
+        self.reflow_status_label.setObjectName("outputPreview")
+        self.reflow_status_label.setWordWrap(True)
+        reflow_card.body.addWidget(self.reflow_status_label)
+
+        reflow_button_row = QHBoxLayout()
+        reflow_button_row.addStretch()
+        self.reflow_button = QPushButton("Aérer le document")
+        self.reflow_button.setObjectName("primary")
+        self.reflow_button.setEnabled(False)
+        self.reflow_button.clicked.connect(self._on_reflow_clicked)
+        reflow_button_row.addWidget(self.reflow_button)
+        reflow_card.body.addLayout(reflow_button_row)
+        root.addWidget(reflow_card)
+
         undo_card = Card("Annuler le nettoyage des titres et traits d'union")
         undo_card.body.addWidget(QLabel(
             "Choisissez un fichier .md déjà traduit par TRANSLAX avec le nettoyage activé : "
@@ -1699,7 +1785,91 @@ class MainWindow(QWidget):
         root.addWidget(undo_card)
         root.addStretch(1)
 
-        self.pages.addWidget(page)  # index PAGE_TOOLS
+        # Défilante, comme les autres écrans : deux cartes ne tiennent plus
+        # forcément à la taille minimale de la fenêtre.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(page)
+        self.pages.addWidget(scroll)  # index PAGE_TOOLS
+
+    # ------------------------------------------- outil : aérer un .md existant
+    def _pick_reflow_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Choisir un fichier traduit", "", "Markdown (*.md)")
+        if path:
+            self.reflow_path_edit.setText(path)
+
+    def _reflow_blocker(self, path: Path) -> str | None:
+        """Raison de refuser d'aérer ce fichier, ou None si c'est sans risque."""
+        if not path.exists():
+            return "Fichier introuvable."
+        if path.suffix.lower() != ".md":
+            return "Choisissez un fichier .md."
+        # Jamais un fichier encore en cours d'écriture : une traduction en
+        # cours (dans cette fenêtre OU dans une autre instance de TRANSLAX)
+        # y ajoute ses segments au fil de l'eau -- le réécrire maintenant
+        # mélangerait les deux écritures. L'état de reprise le dit.
+        job_state = state_mod.load_state(path)
+        if job_state is not None and not job_state.finished:
+            return (
+                f"Traduction pas encore terminée pour ce fichier ({job_state.done}/{job_state.total} segments) : "
+                "attendez la fin avant de l'aérer."
+            )
+        return None
+
+    def _update_reflow_status(self) -> None:
+        if self._reflow_thread is not None:
+            return  # aération en cours : le bouton reste grisé jusqu'à la fin
+        text = self.reflow_path_edit.text().strip()
+        if not text:
+            self.reflow_status_label.setText("")
+            self.reflow_button.setEnabled(False)
+            return
+        blocker = self._reflow_blocker(Path(text))
+        self.reflow_status_label.setText(blocker or "Prêt à aérer ce document.")
+        self.reflow_button.setEnabled(blocker is None)
+
+    def _on_reflow_clicked(self) -> None:
+        path = Path(self.reflow_path_edit.text().strip())
+        blocker = self._reflow_blocker(path)  # revérifié : l'état a pu changer depuis la saisie
+        if blocker is not None:
+            self.reflow_status_label.setText(blocker)
+            self.reflow_button.setEnabled(False)
+            return
+        self.reflow_button.setEnabled(False)
+        self.reflow_status_label.setText("Aération en cours…")
+        self._reflow_thread = QThread(self)
+        self._reflow_worker = ReflowWorker(path, make_pdf=self.reflow_pdf_check.isChecked())
+        self._reflow_worker.moveToThread(self._reflow_thread)
+        self._reflow_thread.started.connect(self._reflow_worker.run)
+        self._reflow_worker.finished.connect(self._on_reflow_finished)
+        self._reflow_worker.failed.connect(self._on_reflow_failed)
+        self._reflow_worker.finished.connect(self._reflow_thread.quit)
+        self._reflow_worker.failed.connect(self._reflow_thread.quit)
+        self._reflow_thread.finished.connect(self._on_reflow_thread_finished)
+        self._reflow_thread.start()
+
+    @Slot(object)
+    def _on_reflow_finished(self, outcome) -> None:
+        report, pdf_path = outcome
+        message = report.summary()
+        if pdf_path is not None:
+            message += f"\nPDF : {pdf_path}"
+        self.reflow_status_label.setText(message)
+        self._update_undo_status()
+
+    @Slot(str)
+    def _on_reflow_failed(self, message: str) -> None:
+        self.reflow_status_label.setText(f"Échec : {message}")
+
+    @Slot()
+    def _on_reflow_thread_finished(self) -> None:
+        if self._reflow_thread is not None:
+            self._reflow_thread.deleteLater()
+        self._reflow_thread = None
+        self._reflow_worker = None
+        path_text = self.reflow_path_edit.text().strip()
+        self.reflow_button.setEnabled(bool(path_text) and self._reflow_blocker(Path(path_text)) is None)
 
     def _pick_undo_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Choisir un fichier traduit", "", "Markdown (*.md)")
@@ -1750,20 +1920,90 @@ class MainWindow(QWidget):
         self._update_undo_status()
 
     # --------------------------------------------------- barre de titre
+    def _create_title_bar(self, button_style: str) -> TitleBar:
+        title_bar = TitleBar(self, button_style=button_style)
+        icon_path = _asset_path("icon.ico")
+        if icon_path.exists():
+            title_bar.set_icon(QIcon(str(icon_path)).pixmap(18, 18))
+        title_bar.minimize_clicked.connect(self._minimize)
+        title_bar.maximize_clicked.connect(self._toggle_maximized)
+        title_bar.close_clicked.connect(self.close)
+        title_bar.set_maximized(self._is_zoomed())
+        return title_bar
+
+    def _set_window_button_style(self, button_style: str) -> None:
+        """Change la présentation des boutons de fenêtre (page Paramètres)
+        immédiatement, sans redémarrer : la barre de titre est simplement
+        reconstruite à la même place, puis le choix est mémorisé."""
+        if button_style == self.title_bar.button_style:
+            return
+        settings_mod.set_window_button_style(button_style)
+        old = self.title_bar
+        outer = self.layout()
+        new = self._create_title_bar(button_style)
+        new.set_window_active(self.isActiveWindow())
+        outer.replaceWidget(old, new)
+        old.hide()
+        old.deleteLater()
+        self.title_bar = new
+
+    def _is_zoomed(self) -> bool:
+        return self.isMaximized() or self.isFullScreen()
+
+    def _minimize(self) -> None:
+        # La fenêtre disparaît SOUS le curseur : sans ce rafraîchissement, le
+        # bouton resterait affiché « survolé » au retour (voir ui/titlebar.py).
+        self.showMinimized()
+        self.title_bar.refresh_hover()
+
     def _toggle_maximized(self) -> None:
         if self.isMaximized():
             self.showNormal()
         else:
             self.showMaximized()
 
+    def _refresh_window_chrome(self) -> None:
+        """Coins (arrondis seulement hors plein écran), état Agrandir/
+        Restaurer et survol des boutons, d'après l'état RÉEL de la fenêtre."""
+        zoomed = self._is_zoomed()
+        self.title_bar.set_maximized(zoomed)
+        window_effects.apply_native_corners(self, rounded=not zoomed)
+        if window_effects.uses_painted_corners():
+            self.update()
+        self.title_bar.refresh_hover()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - API Qt
+        super().showEvent(event)
+        # La fenêtre native n'existe qu'à partir d'ici : c'est le premier
+        # moment où DWM (Windows 11) peut l'arrondir.
+        self._refresh_window_chrome()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - API Qt
+        if window_effects.uses_painted_corners():
+            # macOS : fond transparent, dessiné ici en rectangle arrondi --
+            # voir ui/window_effects.py.
+            window_effects.paint_rounded_background(self, rounded=not self._is_zoomed())
+            return
+        super().paintEvent(event)
+
     def changeEvent(self, event) -> None:  # noqa: N802 - API Qt
         """
-        Garde l'icône Agrandir/Restaurer synchronisée avec l'état réel de la
-        fenêtre -- pas seulement quand on clique le bouton, mais aussi après
-        un double-clic sur la barre, un Win+Haut, ou un « snap » Windows.
+        Garde la barre de titre synchronisée avec l'état réel de la fenêtre
+        -- pas seulement quand on clique un bouton, mais aussi après un
+        double-clic sur la barre, un Win+Haut, ou un « snap » Windows :
+        icône Agrandir/Restaurer, coins arrondis ou carrés, survol des
+        boutons recalculé, pastilles grisées quand la fenêtre est inactive.
         """
-        if event.type() == QEvent.WindowStateChange:
-            self.title_bar.set_maximized(self.isMaximized())
+        if event.type() == QEvent.WindowStateChange and getattr(self, "title_bar", None) is not None:
+            self._refresh_window_chrome()
+            # La géométrie finale n'est connue qu'un instant plus tard
+            # (animation d'agrandissement) : second passage pour le survol.
+            # `self.title_bar` relu au moment du rappel, pas maintenant : la
+            # barre a pu être reconstruite entre-temps (page Paramètres).
+            QTimer.singleShot(120, lambda: self.title_bar.refresh_hover())
+        elif event.type() == QEvent.ActivationChange and getattr(self, "title_bar", None) is not None:
+            self.title_bar.set_window_active(self.isActiveWindow())
+            self.title_bar.refresh_hover()
         super().changeEvent(event)
 
     # --------------------------------------------- redimensionnement (bords)
@@ -2171,6 +2411,7 @@ class MainWindow(QWidget):
             return
 
         cleanup = self.cleanup_check.isChecked()
+        split_paragraphs = self.split_check.isChecked()
         job = pipeline.Job(
             input_path=self.source_path,
             output_path=out_path,
@@ -2178,6 +2419,7 @@ class MainWindow(QWidget):
             tgt_lang=tgt,
             model_key=model_key,
             cleanup=cleanup,
+            split_paragraphs=split_paragraphs,
             resume=resume_mode,
             use_vision_ocr=use_vision,
             vision_provider=vision_provider,
@@ -2217,6 +2459,7 @@ class MainWindow(QWidget):
             "tgt_lang": tgt,
             "model_key": model_key,
             "cleanup": cleanup,
+            "split_paragraphs": split_paragraphs,
             "output_format": self.output_format_combo.currentData(),
         })
 
@@ -2276,6 +2519,9 @@ class MainWindow(QWidget):
         if apply_model:
             self._set_model_combo(snapshot.get("model_key"))
         self.cleanup_check.setChecked(bool(snapshot.get("cleanup", False)))
+        # Absent d'un job mémorisé par une version antérieure (avant le
+        # 10/11/2026) : aéré par défaut, comme tout nouveau job.
+        self.split_check.setChecked(bool(snapshot.get("split_paragraphs", True)))
         format_idx = self.output_format_combo.findData(snapshot.get("output_format", "md"))
         if format_idx >= 0:
             self.output_format_combo.setCurrentIndex(format_idx)
@@ -2702,6 +2948,8 @@ class MainWindow(QWidget):
         else:
             if result.cleanup_report is not None:
                 self._append_log(result.cleanup_report.summary())
+            if result.paragraph_report is not None:
+                self._append_log(result.paragraph_report.summary())
             for note in result.notes:  # ex. un échec d'export PDF, non bloquant
                 self._append_log(note)
             self._append_log(f"Terminé : {result.output_path}")
@@ -2761,6 +3009,7 @@ class MainWindow(QWidget):
             self.output_button,
             self.output_reset_button,
             self.cleanup_check,
+            self.split_check,
             self.extract_only_check,
             self.translate_button,
             self.translate_x_button,
