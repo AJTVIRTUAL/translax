@@ -3152,11 +3152,13 @@ Fait sans arrêter le TRANSLAX.exe qui traduisait un document à ce moment-là
   fond transparent + rectangle arrondi dessiné (`paintEvent`), le contenu
   étant déjà en retrait de `RESIZE_MARGIN`. Windows 10 : carré. Le splash
   de démarrage est arrondi de la même façon.
-- **Pastilles style Apple par défaut sur tous les OS** (réglage « Boutons
-  de la fenêtre » dans Paramètres > Apparence, appliqué immédiatement,
-  « Classiques — style Windows » au choix) : survoler le GROUPE révèle ×, −
-  et les flèches du vert (vers l'intérieur une fois agrandie), pastilles
-  grises quand la fenêtre est inactive, assombries tant qu'on clique.
+- **Pastilles style Apple** : survoler le GROUPE révèle ×, − et les flèches
+  du vert (vers l'intérieur une fois agrandie), pastilles grises quand la
+  fenêtre est inactive, assombries tant qu'on clique. D'abord par défaut sur
+  tous les OS avec un réglage « Apparence » (v1.21.0) ; **depuis le
+  11/11/2026 (v1.22.0), imposées par le système** -- demande explicite de
+  l'utilisateur : boutons classiques à droite sous Windows, pastilles à
+  gauche seulement sur Mac, réglage « Apparence » retiré.
 - **Survol « bloqué » corrigé** : Qt rate parfois l'évènement de sortie
   quand la fenêtre change d'état sous le curseur (Réduire, Agrandir) ;
   `TitleBar.refresh_hover()` recalcule d'après la position réelle du
@@ -3183,7 +3185,8 @@ Fait sans arrêter le TRANSLAX.exe qui traduisait un document à ce moment-là
   corrections du test lui-même : la section 8c restait bloquée pour
   toujours en mode offscreen (le passage programmatique sur « 1.3B »
   ouvrait l'avertissement « usage personnel » modal -- blocage antérieur à
-  ce travail), et le décompte des boutons ⓘ passe à 6 (carte Apparence).
+  ce travail), et le décompte des boutons ⓘ (6 avec la carte Apparence,
+  revenu à 5 en v1.22.0 quand cette carte a été retirée).
 - Fenêtre affichée pour de vrai (réglages isolés) : coins, survol du groupe
   de pastilles par évènements souris Qt, sortie, survol Fermer (Windows),
   survol bloqué corrigé, bascule de présentation à chaud.
@@ -3196,6 +3199,85 @@ Fait sans arrêter le TRANSLAX.exe qui traduisait un document à ce moment-là
   (`scripts/build_installer.py`) et publié en GitHub Release v1.21.0 --
   pas testé par une vraie installation (la version installée tournait à ce
   moment-là).
+
+## 5 quadragies. Rayon unique, disposition alignée, animations (ajouté le 11/11/2026)
+
+Demande explicite de l'utilisateur : « prends la valeur des coins arrondis
+[de la fenêtre] et applique-la dans toute l'application (boutons, barres de
+progression…) pour une harmonie ; optimise la disposition des éléments pour
+plus d'ordre visuel ; plus d'animations ».
+
+### Un seul rayon -- `ui/theme.py`
+
+- `RADIUS = 8` : celui que Windows 11 donne à la fenêtre (DWM). Cartes,
+  boutons, champs, listes, zone de dépôt, journal, encadrés, bulles d'aide,
+  menus : tous à 8 px. `RADIUS_SMALL = 4` pour les éléments minuscules
+  (case de 16 px, poignée de défilement, éléments d'une liste) -- 8 px en
+  ferait des ronds. Pilules (barre de progression, interrupteurs) : arrondi
+  complet. Seule exception : boutons de la barre de titre, collés au bord.
+- `ui/styles.qss` ne lit pas de variable : valeurs écrites en dur,
+  **vérifiées par `tests/test_theme.py`** (tout `border-radius` vaut 8 ou 4).
+- Listes déroulantes et bulles d'aide : petites fenêtres à part, arrondies
+  par Windows 11 au même rayon (filtre d'application, `ui/animations.py`).
+
+### Ordre visuel
+
+- Ancienne carte unique « Réglages » découpée par thème : **Langues et
+  moteur**, **Sortie et options**, **Traduire X — documents scannés** (OCR
+  d'abord, clé API ensuite, explication dans le ⓘ de la carte).
+- `Card.add_field` : libellé dans une colonne de largeur FIXE
+  (`theme.FIELD_LABEL_WIDTH`) -- tous les champs de toutes les cartes
+  commencent au même x (vérifié par test). `Card.add_note` : les encadrés
+  (description du modèle, fichier de sortie, messages d'état) s'alignent sur
+  cette colonne. `Card.add_actions` : boutons d'action toujours en bas, à
+  droite, à largeur naturelle (sauf les boutons du cache, empilés comme
+  demandé le 26/08).
+- Marges/espacements communs (`theme.PAGE_MARGINS`, `PAGE_SPACING`…), en-tête
+  commun (`_page_header`), champs et boutons à la même hauteur.
+- Page Traduire titrée « Traduire » (« Extraire » en mode extraction) au lieu
+  de « TRANSLAX » répété ; rangée d'actions en deux groupes (lancer / piloter).
+- **Bug corrigé** : la page Outils débordait à droite (texte sans retour à la
+  ligne). Plus aucun écran ne défile horizontalement ; à la largeur minimale
+  (620 px), les listes et libellés se raccourcissent au lieu d'élargir la
+  page (vérifié par test, sur le vrai moteur d'affichage -- le mode
+  « offscreen » n'a pas de vraies polices et fausse les largeurs).
+
+### Animations -- `ui/animations.py`, `ui/widgets.py`
+
+- **Transition entre écrans** : l'ancien écran s'efface, titre et cartes du
+  nouveau arrivent en cascade (460 ms). Technique par instantanés : l'écran
+  réel change immédiatement, un calque transparent aux clics anime les
+  photos -- aucun layout touché. Jouée aussi au lancement sur le hall.
+- **Lueur au survol** de tous les boutons (y compris des boîtes de dialogue
+  créées plus tard) : remplace le changement de fond instantané du QSS ;
+  remise à zéro si le bouton est masqué ou désactivé sous le curseur.
+- **Interrupteurs** façon iOS à la place des cases à cocher (sous-classe de
+  QCheckBox, même API) ; libellé raccourci avec bulle d'aide si trop long.
+- **Barre de progression** en pilule : reflet qui la parcourt pendant le
+  travail (balayage puis pause, pour ne jamais distraire), segment de
+  va-et-vient quand la durée est inconnue, jamais un ovale écrasé quand elle
+  est presque vide. Aussi pour la barre des mises à jour.
+- Bandeau anti-veille et messages d'état déroulés en douceur ; glyphes des
+  pastilles en fondu, pastilles grises qui reprennent leur couleur en douceur.
+
+### Vérifié
+
+- `tests/test_theme.py` (nouveau) : rayon unique, alignement des champs,
+  aucun débordement à la largeur minimale, transitions (écran changé tout de
+  suite, calque supprimé, transitions enchaînées), lueur (montée, descente,
+  bouton masqué, boutons créés plus tard), interrupteur, barre (4 états).
+- Images intermédiaires réelles de la transition, de l'interrupteur et de la
+  barre ; fenêtre affichée à l'écran : coins toujours arrondis, liste
+  déroulante arrondie par Windows.
+- Survol à la souris réelle non vérifié automatiquement (Windows refuse le
+  premier plan à une fenêtre de test lancée en arrière-plan) -- mécanisme
+  vérifié par de vrais évènements Qt d'entrée/sortie.
+- **Version 1.22.0** (11/11/2026) : avec en plus les boutons de fenêtre
+  imposés par le système (à droite sous Windows, pastilles seulement sur
+  Mac, réglage « Apparence » retiré -- voir §5 tricies novies). Exe réel
+  lancé et capturé (boutons à droite, coins arrondis, nouvelle disposition,
+  version affichée) ; installeur `TRANSLAX-Setup-1.22.0.exe` publié en
+  GitHub Release v1.22.0, pas testé par une vraie installation.
 
 ## 6. Interface
 

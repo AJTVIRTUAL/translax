@@ -1,6 +1,16 @@
 /* TRANSLAX — thème sombre.
    Feuille de style Qt (sous-ensemble de CSS : pas d'ombres, pas de
-   transitions, pas de flexbox — la mise en page vient des layouts Python). */
+   transitions, pas de flexbox — la mise en page vient des layouts Python).
+
+   Coins arrondis (11/11/2026) : UN seul rayon pour toute l'application,
+   8px -- celui que Windows 11 donne à la fenêtre elle-même (voir
+   ui/theme.py::RADIUS). 4px pour les tout petits éléments (case de 16px,
+   poignée de défilement), 0 uniquement pour les boutons de la barre de
+   titre, collés au bord. Vérifié par tests/test_theme.py.
+
+   Survol des boutons : plus de changement de fond instantané ici -- c'est
+   une lueur animée qui s'en charge (voir ui/animations.py). Seule la
+   couleur de bordure change encore au survol. */
 
 QWidget {
     background-color: #12151c;
@@ -31,7 +41,7 @@ QLabel#appSubtitle {
 QFrame#card {
     background-color: #1a1f2a;
     border: 1px solid #262d3a;
-    border-radius: 0px;
+    border-radius: 8px;
 }
 
 QLabel#cardTitle {
@@ -40,6 +50,11 @@ QLabel#cardTitle {
     font-weight: 700;
     letter-spacing: 1.5px;
     text-transform: uppercase;
+}
+
+/* Libellé de champ, colonne de gauche des cartes (voir MainWindow._field_label). */
+QLabel#fieldLabel {
+    color: #aab4c4;
 }
 
 /* --- Barre de titre (remplace la barre native Windows) ----------------- */
@@ -63,9 +78,9 @@ QLabel#titleBarText[inactive="true"] {
 }
 
 /* object name plutôt que le type QPushButton seul : la spécificité l'emporte
-   sur la règle générale QPushButton plus bas dans ce fichier (fond, bordure,
-   coins arrondis, padding) -- ces boutons doivent rester à vif, carrés,
-   collés au bord de la fenêtre, comme sur une vraie barre de titre. */
+   sur la règle générale QPushButton plus bas dans ce fichier -- ces boutons
+   doivent rester à vif, carrés, collés au bord de la fenêtre, comme sur une
+   vraie barre de titre (seule exception au rayon commun). */
 QPushButton#titleBarButton,
 QPushButton#titleBarClose {
     background-color: transparent;
@@ -95,7 +110,7 @@ QPushButton#titleBarClose:pressed {
 QFrame#dropZone {
     background-color: #161b24;
     border: 2px dashed #333c4d;
-    border-radius: 0px;
+    border-radius: 8px;
 }
 
 QFrame#dropZone[hover="true"] {
@@ -124,16 +139,22 @@ QLabel#fileDetails {
 
 /* --- Champs ----------------------------------------------------------- */
 
+/* Même hauteur que les boutons ordinaires (padding 8px de part et d'autre) :
+   un champ et le bouton posé à côté s'alignent au pixel près. */
 QComboBox, QLineEdit {
     background-color: #10141b;
     border: 1px solid #2b3444;
-    border-radius: 0px;
-    padding: 7px 10px;
+    border-radius: 8px;
+    padding: 8px 10px;
     selection-background-color: #4f8cff;
 }
 
 QComboBox:hover, QLineEdit:hover {
     border-color: #3b4759;
+}
+
+QComboBox:focus, QLineEdit:focus {
+    border-color: #3b7dfb;
 }
 
 QComboBox:disabled, QLineEdit:disabled {
@@ -143,14 +164,35 @@ QComboBox:disabled, QLineEdit:disabled {
 
 QComboBox::drop-down {
     border: none;
-    width: 22px;
+    width: 24px;
 }
 
+/* La liste déroulante est une petite fenêtre à part : Windows 11 l'arrondit
+   lui-même au même rayon (voir ui/animations.py). */
 QComboBox QAbstractItemView {
     background-color: #1a1f2a;
     border: 1px solid #2b3444;
-    selection-background-color: #4f8cff;
+    border-radius: 8px;
+    padding: 4px;
+    selection-background-color: #3b7dfb;
     outline: none;
+}
+
+QComboBox QAbstractItemView::item {
+    min-height: 26px;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+/* Explicites : dès que ::item est stylé, Qt n'applique plus
+   selection-background-color tout seul. */
+QComboBox QAbstractItemView::item:hover {
+    background-color: #232b38;
+}
+
+QComboBox QAbstractItemView::item:selected {
+    background-color: #3b7dfb;
+    color: #ffffff;
 }
 
 QPushButton#swapLangButton {
@@ -159,12 +201,11 @@ QPushButton#swapLangButton {
     font-weight: 700;
     background-color: #10141b;
     border: 1px solid #232b38;
-    border-radius: 0px;
+    border-radius: 8px;
     padding: 0px;
 }
 
 QPushButton#swapLangButton:hover {
-    background-color: #1a1f2a;
     border: 1px solid #4f8cff;
 }
 
@@ -181,10 +222,10 @@ QPushButton#swapLangButton:disabled {
 
 QLabel#outputPreview {
     color: #9aa5b7;
-    padding: 8px 10px;
+    padding: 8px 12px;
     background-color: #10141b;
     border: 1px solid #232b38;
-    border-radius: 0px;
+    border-radius: 8px;
 }
 
 /* Rappel anti-veille : visible seulement pendant la traduction (voir
@@ -194,11 +235,14 @@ QLabel#keepAwake {
     color: #7db8e8;
     background-color: #10192a;
     border: 1px solid #1f3a5c;
-    border-radius: 0px;
-    padding: 6px 10px;
+    border-radius: 8px;
+    padding: 8px 12px;
     font-size: 12px;
 }
 
+/* Interrupteurs (ui/widgets.py::ToggleSwitch, dessinés à la main) : seule la
+   couleur du libellé vient d'ici. Les vraies cases à cocher restantes (boîtes
+   de dialogue système) gardent le style ci-dessous. */
 QCheckBox {
     spacing: 8px;
     color: #c3ccdb;
@@ -208,7 +252,7 @@ QCheckBox::indicator {
     width: 16px;
     height: 16px;
     border: 1px solid #3b4759;
-    border-radius: 0px;
+    border-radius: 4px;
     background-color: #10141b;
 }
 
@@ -222,14 +266,13 @@ QCheckBox::indicator:checked {
 QPushButton {
     background-color: #232b38;
     border: 1px solid #313b4b;
-    border-radius: 0px;
+    border-radius: 8px;
     padding: 8px 16px;
     color: #dbe2ee;
     font-weight: 600;
 }
 
 QPushButton:hover {
-    background-color: #2b3543;
     border-color: #3d4959;
 }
 
@@ -251,10 +294,6 @@ QPushButton#primary {
     font-size: 14px;
 }
 
-QPushButton#primary:hover {
-    background-color: #4f8cff;
-}
-
 QPushButton#primary:pressed {
     background-color: #2f6ad8;
 }
@@ -273,7 +312,6 @@ QPushButton#danger {
 }
 
 QPushButton#danger:hover {
-    background-color: #3a2427;
     border-color: #7c3a38;
 }
 
@@ -292,7 +330,6 @@ QPushButton#pauseButton {
 }
 
 QPushButton#pauseButton:hover {
-    background-color: #24382a;
     border-color: #4c8a5a;
 }
 
@@ -311,6 +348,7 @@ QPushButton#pauseButton:disabled {
 QPushButton#hubButton {
     background-color: #1a1f2a;
     border: 1px solid #2b3444;
+    border-radius: 8px;
     color: #e6eaf2;
     font-size: 15px;
     font-weight: 700;
@@ -320,7 +358,6 @@ QPushButton#hubButton {
 }
 
 QPushButton#hubButton:hover {
-    background-color: #202737;
     border-color: #3b7dfb;
 }
 
@@ -348,7 +385,7 @@ QPushButton#backButton:pressed {
 QPushButton#infoButton {
     background-color: #1a1f2a;
     border: 1px solid #2b3444;
-    border-radius: 0px;
+    border-radius: 8px;
     color: #8b96a8;
     font-weight: 700;
     font-size: 12px;
@@ -366,15 +403,18 @@ QPushButton#infoButton:pressed {
 
 /* --- Progression ------------------------------------------------------ */
 
+/* La barre principale et celle des mises à jour sont dessinées à la main
+   (ui/widgets.py::AnimatedProgressBar : pilule + reflet animé). Règle
+   gardée pour toute autre barre éventuelle. */
 QProgressBar {
     background-color: #10141b;
     border: 1px solid #232b38;
-    border-radius: 0px;
-    height: 16px;
+    border-radius: 4px;
+    height: 10px;
 }
 
 QProgressBar::chunk {
-    border-radius: 0px;
+    border-radius: 4px;
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                                       stop:0 #3b7dfb, stop:1 #59d4c4);
 }
@@ -382,7 +422,7 @@ QProgressBar::chunk {
 QLabel#stats {
     color: #9aa5b7;
     font-size: 12px;
-    padding: 2px 2px 4px 2px;
+    padding: 2px 2px 0px 2px;
 }
 
 /* Numéro de version + date de build, tout en bas de la fenêtre -- discret
@@ -396,7 +436,7 @@ QLabel#versionLabel {
 QPlainTextEdit {
     background-color: #0d1117;
     border: 1px solid #232b38;
-    border-radius: 0px;
+    border-radius: 8px;
     padding: 8px;
     color: #a8b3c4;
     font-family: "Cascadia Mono", "Consolas", monospace;
@@ -405,14 +445,14 @@ QPlainTextEdit {
 
 QScrollBar:vertical {
     background: transparent;
-    width: 10px;
+    width: 12px;
     margin: 2px;
 }
 
 QScrollBar::handle:vertical {
     background: #2f3947;
-    border-radius: 0px;
-    min-height: 24px;
+    border-radius: 4px;
+    min-height: 28px;
 }
 
 QScrollBar::handle:vertical:hover {
@@ -425,6 +465,33 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
     background: none;
+}
+
+/* --- Bulles d'aide et menus (petites fenêtres arrondies par Windows 11) -- */
+
+QToolTip {
+    background-color: #1a1f2a;
+    color: #e6eaf2;
+    border: 1px solid #2b3444;
+    border-radius: 8px;
+    padding: 6px 8px;
+}
+
+QMenu {
+    background-color: #1a1f2a;
+    border: 1px solid #2b3444;
+    border-radius: 8px;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 6px 16px;
+    border-radius: 4px;
+}
+
+QMenu::item:selected {
+    background-color: #3b7dfb;
+    color: #ffffff;
 }
 
 /* --- Boîtes de dialogue ----------------------------------------------- */

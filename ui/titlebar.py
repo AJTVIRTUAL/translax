@@ -5,20 +5,19 @@ La fenêtre est créée avec `Qt.FramelessWindowHint` (voir `main_window.py`) :
 l'OS ne dessine plus rien en haut de la fenêtre, ni icône, ni titre, ni
 boutons Réduire/Agrandir/Fermer. Ce module recrée les trois, dans le style
 QSS de TRANSLAX plutôt que le style natif du système, selon deux
-présentations au choix (réglage « Boutons de la fenêtre », page Paramètres,
-voir `core/settings.py::get_window_button_style`) :
+présentations, imposées par le système (demande explicite de l'utilisateur,
+11/11/2026 : « sur Windows, garde les 3 boutons à droite ; les 3 boutons à
+gauche seulement sur Mac ») -- plus de réglage pour en changer :
 
-  - **"mac"** (par défaut sur tous les OS depuis le 10/11/2026 -- demande
-    explicite de l'utilisateur : « exactement comme pour les logiciels
-    Apple », « le survol doit faire apparaître les x, - ») : pastilles
-    rouge/jaune/verte à gauche (`MacTrafficLights`), titre centré, pas
-    d'icône dans la barre. Comme sur macOS :
+  - **"mac"** (macOS uniquement) : pastilles rouge/jaune/verte à gauche
+    (`MacTrafficLights`), titre centré, pas d'icône dans la barre. Comme
+    sur macOS (« le survol doit faire apparaître les x, - ») :
       * survoler le GROUPE révèle les trois glyphes ensemble (×, −, et les
         deux flèches du vert -- tournées vers l'intérieur quand la fenêtre
         est agrandie) ;
       * fenêtre inactive : pastilles grises, recolorées dès qu'on les survole ;
       * pastille enfoncée : teinte assombrie tant que le clic est maintenu.
-  - **"windows"** : icône à gauche, titre à côté, boutons Réduire/Agrandir/
+  - **"windows"** (Windows) : icône à gauche, titre à côté, boutons Réduire/Agrandir/
     Fermer à droite, dessinés en traits fins façon Windows 11
     (`TitleBarButton`) ; Fermer passe au rouge avec une croix blanche au
     survol, comme le vrai bouton de Windows.
@@ -56,7 +55,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QCursor, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QWidget
 
@@ -65,7 +64,10 @@ IS_MAC = sys.platform == "darwin"
 STYLE_MAC = "mac"
 STYLE_WINDOWS = "windows"
 STYLES = (STYLE_MAC, STYLE_WINDOWS)
-DEFAULT_STYLE = STYLE_MAC
+# Imposé par le système (demande explicite de l'utilisateur, 11/11/2026) :
+# pastilles à gauche UNIQUEMENT sur Mac, boutons classiques à droite sous
+# Windows -- plus de réglage pour changer ça.
+DEFAULT_STYLE = STYLE_MAC if IS_MAC else STYLE_WINDOWS
 
 TITLE_BAR_HEIGHT = 36
 RESIZE_MARGIN = 6          # bord invisible autour de la fenêtre, pour la saisir au redimensionnement
@@ -99,6 +101,16 @@ MAC_DOT_DIAMETER = 12
 MAC_DOT_PAD = 1            # marge autour du cercle, pour que son bord lissé ne soit jamais rogné
 MAC_DOT_SPACING = 8        # écart visible entre deux pastilles (comme macOS)
 MAC_GROUP_LEFT_MARGIN = 8  # + RESIZE_MARGIN de la fenêtre = 14 px du bord, comme macOS
+
+
+def _mix(a: QColor, b: QColor, t: float) -> QColor:
+    """Couleur à `t` (0..1) du chemin entre `a` et `b`."""
+    t = max(0.0, min(1.0, t))
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * t),
+        round(a.green() + (b.green() - a.green()) * t),
+        round(a.blue() + (b.blue() - a.blue()) * t),
+    )
 
 
 def _cursor_inside(widget: QWidget) -> bool:
@@ -244,29 +256,29 @@ class MacTrafficLightButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        hovered = self._group.is_hovered()
-        lit = hovered or self._group.is_window_active()
-        if lit:
-            fill = QColor(MAC_DOT_COLORS[self.kind])
-            border = QColor(MAC_DOT_BORDERS[self.kind])
-            if self.isDown():
-                fill = fill.darker(125)
-                border = border.darker(125)
-        else:
-            fill, border = MAC_DOT_INACTIVE, MAC_DOT_INACTIVE_BORDER
+        # Survol animé (11/11/2026) : glyphe en fondu, et pastille grise
+        # (fenêtre inactive) qui reprend sa couleur en douceur.
+        hover = self._group.hover_progress()
+        lit = 1.0 if self._group.is_window_active() else hover
+        fill = _mix(MAC_DOT_INACTIVE, MAC_DOT_COLORS[self.kind], lit)
+        border = _mix(MAC_DOT_INACTIVE_BORDER, MAC_DOT_BORDERS[self.kind], lit)
+        if self.isDown():
+            fill = fill.darker(125)
+            border = border.darker(125)
 
         rect = QRectF(MAC_DOT_PAD, MAC_DOT_PAD, MAC_DOT_DIAMETER, MAC_DOT_DIAMETER)
         painter.setPen(QPen(border, 0.8))
         painter.setBrush(fill)
         painter.drawEllipse(rect.adjusted(0.4, 0.4, -0.4, -0.4))
 
-        if hovered:
-            self._draw_glyph(painter, rect.center())
+        if hover > 0:
+            self._draw_glyph(painter, rect.center(), hover)
 
-    def _draw_glyph(self, painter: QPainter, center: QPointF) -> None:
+    def _draw_glyph(self, painter: QPainter, center: QPointF, opacity: float = 1.0) -> None:
         color = QColor(MAC_GLYPH_COLORS[self.kind])
         if self.isDown():
             color = color.darker(140)
+        color.setAlphaF(max(0.0, min(1.0, opacity)))
         cx, cy = center.x(), center.y()
         pen = QPen(color)
         pen.setCapStyle(Qt.RoundCap)
@@ -310,6 +322,10 @@ class MacTrafficLights(QWidget):
         super().__init__(parent)
         self._hovered = False
         self._window_active = True
+        self._hover_progress = 0.0
+        self._hover_animation = QVariantAnimation(self)
+        self._hover_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._hover_animation.valueChanged.connect(self._set_hover_progress)
         self.setFixedHeight(TITLE_BAR_HEIGHT)
 
         layout = QHBoxLayout(self)
@@ -329,14 +345,26 @@ class MacTrafficLights(QWidget):
     def is_hovered(self) -> bool:
         return self._hovered
 
+    def hover_progress(self) -> float:
+        """0 (pas survolé) -> 1 (survolé), animé : sert au fondu des glyphes."""
+        return self._hover_progress
+
     def is_window_active(self) -> bool:
         return self._window_active
+
+    def _set_hover_progress(self, value) -> None:
+        self._hover_progress = float(value)
+        for button in self.buttons():
+            button.update()
 
     def set_hovered(self, hovered: bool) -> None:
         if hovered != self._hovered:
             self._hovered = hovered
-            for button in self.buttons():
-                button.update()
+            self._hover_animation.stop()
+            self._hover_animation.setDuration(110 if hovered else 180)
+            self._hover_animation.setStartValue(self._hover_progress)
+            self._hover_animation.setEndValue(1.0 if hovered else 0.0)
+            self._hover_animation.start()
 
     def set_window_active(self, active: bool) -> None:
         if active != self._window_active:

@@ -1505,8 +1505,8 @@ def main() -> int:
             b for b in settings_page_widget.findChildren(QPushButton) if b.objectName() == "infoButton"
         ]
         check("chaque carte à texte explicatif a bien son bouton info "
-              "(Apparence, Matériel, Mises à jour, À propos, Clés API, Cache)",
-              len(settings_info_buttons) == 6, f"({len(settings_info_buttons)})")
+              "(Matériel, Mises à jour, À propos, Clés API, Cache)",
+              len(settings_info_buttons) == 5, f"({len(settings_info_buttons)})")
 
         real_dialog_exec = InfoDialog.exec
         opened_titles: list[str] = []
@@ -1517,7 +1517,7 @@ def main() -> int:
         finally:
             InfoDialog.exec = real_dialog_exec
         check("chaque bouton ouvre bien un InfoDialog distinct, avec un titre",
-              len(opened_titles) == 6 and all(opened_titles), f"({opened_titles!r})")
+              len(opened_titles) == 5 and all(opened_titles), f"({opened_titles!r})")
 
         window._navigate_to(PAGE_TRANSLATE)
         flush_page_animation(window, PAGE_TRANSLATE)

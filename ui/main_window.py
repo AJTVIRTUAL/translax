@@ -17,7 +17,6 @@ from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
     QPropertyAnimation,
-    QSequentialAnimationGroup,
     QSize,
     Qt,
     QThread,
@@ -32,7 +31,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -63,8 +61,9 @@ from core import (
     vision_ocr,
 )
 from core.languages import DEFAULT_SOURCE, DEFAULT_TARGET, LANGUAGES
-from ui import window_effects
-from ui.titlebar import RESIZE_MARGIN, STYLE_MAC, STYLE_WINDOWS, TITLE_BAR_HEIGHT, TitleBar
+from ui import animations, theme, window_effects
+from ui.titlebar import RESIZE_MARGIN, TITLE_BAR_HEIGHT, TitleBar
+from ui.widgets import AnimatedProgressBar, ToggleSwitch
 from ui.worker import ReflowWorker, TranslationWorker, UpdateCheckWorker, UpdateDownloadWorker
 
 MAX_LOG_LINES = 800
@@ -76,7 +75,9 @@ PAGE_HUB = 0
 PAGE_TRANSLATE = 1
 PAGE_TOOLS = 2
 PAGE_SETTINGS = 3
-PAGE_FADE_MS = 160  # fondu de transition entre écrans : rapide, jamais un obstacle à l'usage
+
+TRANSLATE_SUBTITLE = "Traduction locale de documents, entièrement sur votre machine."
+EXTRACT_SUBTITLE = "Texte source extrait et nettoyé, sans traduction."
 
 # Modèle présélectionné à l'écran (voir _build_ui) -- distinct de
 # translate.DEFAULT_MODEL_KEY, voir le commentaire à son point d'usage.
@@ -154,6 +155,40 @@ def _wrapped_label(text: str) -> QLabel:
     return label
 
 
+def _field_label(text: str) -> QLabel:
+    """
+    Libellé de champ, dans la colonne de gauche des cartes. Largeur FIXE et
+    identique partout (`theme.FIELD_LABEL_WIDTH`) : tous les champs de
+    toutes les cartes commencent au même x, d'une carte à l'autre -- avant
+    (11/11/2026), un libellé plus long (« Modèle OCR (Traduire X) »)
+    décalait son champ et cassait l'alignement de toute la colonne.
+    """
+    label = QLabel(text)
+    label.setObjectName("fieldLabel")
+    label.setFixedWidth(theme.FIELD_LABEL_WIDTH)
+    return label
+
+
+def _page_scroll(page: QWidget) -> QScrollArea:
+    """Zone défilante d'un écran : verticale seulement -- un écran ne doit
+    JAMAIS déborder à droite (bug réel rencontré sur la page Outils : un
+    texte sans retour à la ligne la rendait plus large que la fenêtre)."""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setWidget(page)
+    return scroll
+
+
+def _page_layout(page: QWidget) -> QVBoxLayout:
+    """Marges et espacement communs à tous les écrans (voir ui/theme.py)."""
+    root = QVBoxLayout(page)
+    root.setContentsMargins(*theme.PAGE_MARGINS)
+    root.setSpacing(theme.PAGE_SPACING)
+    return root
+
+
 def format_duration(seconds: float) -> str:
     seconds = max(0, int(seconds))
     hours, rest = divmod(seconds, 3600)
@@ -221,6 +256,22 @@ class NoScrollComboBox(QComboBox):
     autour du sélecteur (utile sur la page Paramètres, par exemple),
     plutôt que d'être purement et simplement avalée.
     """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Largeur minimale modeste (11/11/2026) : sans ça, chaque liste
+        # réclamait la largeur de son plus long choix (« MADLAD-400 3B —
+        # Licence commerciale (Google) »…) et rendait la page Traduire plus
+        # large que la fenêtre à sa taille minimale. Le choix affiché se
+        # raccourcit si la place manque ; la liste ouverte, elle, s'élargit
+        # toujours assez pour montrer chaque choix en entier (showPopup).
+        self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(6)
+
+    def showPopup(self) -> None:  # noqa: N802 - nom imposé par Qt
+        view = self.view()
+        view.setMinimumWidth(max(self.width(), view.sizeHintForColumn(0) + 40))
+        super().showPopup()
 
     def wheelEvent(self, event) -> None:  # noqa: N802 - nom imposé par Qt
         event.ignore()
@@ -291,8 +342,8 @@ class Card(QFrame):
         super().__init__()
         self.setObjectName("card")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 14, 20, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(*theme.CARD_MARGINS)
+        layout.setSpacing(theme.CARD_SPACING)
         header = QHBoxLayout()
         header.setSpacing(8)
         heading = QLabel(title)
@@ -303,8 +354,52 @@ class Card(QFrame):
             header.addWidget(_info_button(info_title or title, info))
         layout.addLayout(header)
         self.body = QVBoxLayout()
-        self.body.setSpacing(8)
+        self.body.setSpacing(theme.ROW_SPACING)
         layout.addLayout(self.body)
+
+    def add_field(self, label: str | QLabel, *items, stretch: int = 0) -> QHBoxLayout:
+        """
+        Ajoute une ligne « libellé | champ(s) » : le libellé dans la colonne
+        commune (voir `_field_label`), puis les widgets/layouts donnés ;
+        `items[stretch]` prend toute la largeur restante.
+        """
+        row = QHBoxLayout()
+        row.setSpacing(theme.ROW_SPACING)
+        label_widget = label if isinstance(label, QLabel) else _field_label(label)
+        row.addWidget(label_widget)
+        for i, item in enumerate(items):
+            if isinstance(item, QWidget):
+                row.addWidget(item, 1 if i == stretch else 0)
+            else:
+                row.addLayout(item, 1 if i == stretch else 0)
+                # Champ sur plusieurs lignes (liste d'options…) : libellé en
+                # face de la PREMIÈRE ligne, pas centré sur l'ensemble.
+                row.setAlignment(label_widget, Qt.AlignTop)
+        self.body.addLayout(row)
+        return row
+
+    def add_note(self, widget: QWidget) -> QHBoxLayout:
+        """Encadré qui complète le champ juste au-dessus (description du
+        modèle, nom du fichier de sortie, message d'état…) : aligné sur la
+        colonne des CHAMPS, pas sur le bord de la carte -- on voit
+        immédiatement à quel champ il se rapporte."""
+        row = QHBoxLayout()
+        row.setSpacing(0)
+        row.addSpacing(theme.FIELD_LABEL_WIDTH + theme.ROW_SPACING)
+        row.addWidget(widget, 1)
+        self.body.addLayout(row)
+        return row
+
+    def add_actions(self, *buttons: QPushButton) -> QHBoxLayout:
+        """Boutons d'action d'une carte : toujours en bas, alignés à droite,
+        à leur largeur naturelle -- la même règle sur toutes les cartes."""
+        row = QHBoxLayout()
+        row.setSpacing(theme.ROW_SPACING)
+        row.addStretch(1)
+        for button in buttons:
+            row.addWidget(button)
+        self.body.addLayout(row)
+        return row
 
 
 class ApiKeysDialog(QDialog):
@@ -606,6 +701,11 @@ class MainWindow(QWidget):
         # Windows 11 arrondit lui-même la fenêtre (DWM), rien à poser ici.
         if window_effects.uses_painted_corners():
             self.setAttribute(Qt.WA_TranslucentBackground)
+        # Lueur animée au survol de tous les boutons, menus déroulants et
+        # bulles d'aide arrondis -- y compris ceux des boîtes de dialogue
+        # créées plus tard (voir ui/animations.py). Une seule fois par appli.
+        animations.install_app_effects()
+        self._intro_played = False
         self.setWindowTitle("TRANSLAX")
         self.setMinimumSize(620, 480)
         self.setAcceptDrops(True)
@@ -699,37 +799,16 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------------ UI
     def _navigate_to(self, index: int) -> None:
         """
-        Change d'écran avec un fondu simple (demande explicite de
-        l'utilisateur) : fondu au noir sur l'écran courant, changement de
-        page pendant que l'opacité est à zéro (donc invisible), puis fondu
-        d'apparition sur le nouvel écran. Un seul effet réutilisé (pas un
-        par écran) : posé sur `self.pages` lui-même, qui affiche toujours
-        exactement l'écran courant.
+        Change d'écran avec une transition animée (demande explicite de
+        l'utilisateur, 25/08/2026 puis « plus d'animations », 11/11/2026) :
+        l'ancien écran s'efface, les blocs du nouveau arrivent en cascade --
+        voir ui/animations.py::play_page_transition. L'écran réel change
+        IMMÉDIATEMENT (l'animation se joue sur des photos par-dessus) :
+        `self.pages.currentIndex()` est déjà le bon dès le retour de cet appel.
         """
         if index == self.pages.currentIndex():
             return
-        effect = QGraphicsOpacityEffect(self.pages)
-        self.pages.setGraphicsEffect(effect)
-
-        fade_out = QPropertyAnimation(effect, b"opacity", self)
-        fade_out.setDuration(PAGE_FADE_MS)
-        fade_out.setStartValue(1.0)
-        fade_out.setEndValue(0.0)
-        fade_in = QPropertyAnimation(effect, b"opacity", self)
-        fade_in.setDuration(PAGE_FADE_MS)
-        fade_in.setStartValue(0.0)
-        fade_in.setEndValue(1.0)
-
-        group = QSequentialAnimationGroup(self)
-        group.addAnimation(fade_out)
-        group.addAnimation(fade_in)
-        fade_out.finished.connect(lambda: self.pages.setCurrentIndex(index))
-        # Garde une référence tant que l'animation tourne (sinon le garbage
-        # collector Python peut la libérer avant la fin -- PySide6 ne
-        # possède pas cet objet lui-même) ; relâchée une fois terminée.
-        self._page_animation = group
-        group.finished.connect(lambda: setattr(self, "_page_animation", None))
-        group.start()
+        animations.play_page_transition(self, self.pages, index)
 
     def _build_hub_page(self) -> None:
         """
@@ -1062,49 +1141,9 @@ class MainWindow(QWidget):
         puissance locale est vraiment exploitée plutôt que supposée.
         """
         page = QWidget()
-        root = QVBoxLayout(page)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root = _page_layout(page)
+        self._page_header(root, "Paramètres", "Réglages et diagnostics de TRANSLAX sur cette machine.")
 
-        back_row = QHBoxLayout()
-        back_btn = QPushButton("← Menu")
-        back_btn.setObjectName("backButton")
-        back_btn.clicked.connect(lambda: self._navigate_to(PAGE_HUB))
-        back_row.addWidget(back_btn)
-        back_row.addStretch()
-        root.addLayout(back_row)
-
-        title = QLabel("Paramètres")
-        title.setObjectName("appTitle")
-        subtitle = _wrapped_label("Réglages et diagnostics de TRANSLAX sur cette machine.")
-        subtitle.setObjectName("appSubtitle")
-        root.addWidget(title)
-        root.addWidget(subtitle)
-
-        # Apparence (10/11/2026) : présentation des boutons de fenêtre --
-        # pastilles style Apple par défaut, boutons Windows classiques au
-        # choix. Appliqué immédiatement, mémorisé d'un lancement à l'autre.
-        look_card = Card(
-            "Apparence",
-            info=(
-                "Pastilles (style Apple) : fermer / réduire / agrandir en rouge, jaune et vert à gauche ; "
-                "les symboles ×, − et ⤢ apparaissent au survol. Classiques (style Windows) : boutons à droite."
-            ),
-        )
-        look_row = QHBoxLayout()
-        look_row.setSpacing(10)
-        look_row.addWidget(self._field_label("Boutons de la fenêtre"))
-        self.window_style_combo = NoScrollComboBox()
-        self.window_style_combo.addItem("Pastilles — style Apple", STYLE_MAC)
-        self.window_style_combo.addItem("Classiques — style Windows", STYLE_WINDOWS)
-        style_idx = self.window_style_combo.findData(settings_mod.get_window_button_style())
-        self.window_style_combo.setCurrentIndex(max(0, style_idx))
-        self.window_style_combo.currentIndexChanged.connect(
-            lambda _i: self._set_window_button_style(self.window_style_combo.currentData())
-        )
-        look_row.addWidget(self.window_style_combo, 1)
-        look_card.body.addLayout(look_row)
-        root.addWidget(look_card)
 
         hw_card = Card(
             "Matériel réellement détecté et utilisé",
@@ -1119,12 +1158,9 @@ class MainWindow(QWidget):
         self.system_info_label.setObjectName("outputPreview")
         hw_card.body.addWidget(self.system_info_label)
 
-        refresh_row = QHBoxLayout()
-        refresh_row.addStretch()
         self.refresh_system_info_button = QPushButton("Analyser")
         self.refresh_system_info_button.clicked.connect(self._refresh_system_info)
-        refresh_row.addWidget(self.refresh_system_info_button)
-        hw_card.body.addLayout(refresh_row)
+        hw_card.add_actions(self.refresh_system_info_button)
 
         root.addWidget(hw_card)
 
@@ -1146,23 +1182,19 @@ class MainWindow(QWidget):
         self.update_status_label.setObjectName("outputPreview")
         update_card.body.addWidget(self.update_status_label)
 
-        self.update_progress_bar = QProgressBar()
+        self.update_progress_bar = AnimatedProgressBar()
         self.update_progress_bar.setRange(0, 100)
         self.update_progress_bar.setValue(0)
         self.update_progress_bar.setVisible(False)
         update_card.body.addWidget(self.update_progress_bar)
 
-        update_buttons = QVBoxLayout()
-        update_buttons.setSpacing(8)
         self.check_update_button = QPushButton("Chercher une mise à jour")
         self.check_update_button.clicked.connect(self._check_for_update)
         self.install_update_button = QPushButton("Mettre à jour")
         self.install_update_button.setObjectName("primary")
         self.install_update_button.setVisible(False)
         self.install_update_button.clicked.connect(self._install_update)
-        update_buttons.addWidget(self.check_update_button)
-        update_buttons.addWidget(self.install_update_button)
-        update_card.body.addLayout(update_buttons)
+        update_card.add_actions(self.check_update_button, self.install_update_button)
 
         root.addWidget(update_card)
 
@@ -1192,12 +1224,9 @@ class MainWindow(QWidget):
                 "sur cette machine, jamais transmises par TRANSLAX lui-même."
             ),
         )
-        api_row = QHBoxLayout()
-        api_row.addStretch()
         self.api_keys_settings_button = QPushButton("Gérer les clés API…")
         self.api_keys_settings_button.clicked.connect(self._open_api_keys_dialog)
-        api_row.addWidget(self.api_keys_settings_button)
-        api_card.body.addLayout(api_row)
+        api_card.add_actions(self.api_keys_settings_button)
         root.addWidget(api_card)
 
         cache_card = Card(
@@ -1236,10 +1265,32 @@ class MainWindow(QWidget):
 
         root.addStretch(1)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(page)
-        self.pages.addWidget(scroll)  # index PAGE_SETTINGS
+        self.pages.addWidget(_page_scroll(page))  # index PAGE_SETTINGS
+
+    def _page_header(self, root: QVBoxLayout, title_text: str, subtitle_text: str):
+        """
+        En-tête commun à tous les écrans (hors hall) : lien « ← Menu », grand
+        titre, sous-titre -- mêmes tailles, mêmes espacements partout.
+        Renvoie (bouton retour, titre, sous-titre).
+        """
+        back_row = QHBoxLayout()
+        back_button = QPushButton("← Menu")
+        back_button.setObjectName("backButton")
+        back_button.clicked.connect(lambda: self._navigate_to(PAGE_HUB))
+        back_row.addWidget(back_button)
+        back_row.addStretch()
+        root.addLayout(back_row)
+
+        header = QVBoxLayout()
+        header.setSpacing(2)
+        title = QLabel(title_text)
+        title.setObjectName("appTitle")
+        subtitle = _wrapped_label(subtitle_text)
+        subtitle.setObjectName("appSubtitle")
+        header.addWidget(title)
+        header.addWidget(subtitle)
+        root.addLayout(header)
+        return back_button, title, subtitle
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -1249,7 +1300,7 @@ class MainWindow(QWidget):
         outer.setContentsMargins(RESIZE_MARGIN, RESIZE_MARGIN, RESIZE_MARGIN, RESIZE_MARGIN)
         outer.setSpacing(0)
 
-        self.title_bar = self._create_title_bar(settings_mod.get_window_button_style())
+        self.title_bar = self._create_title_bar()
         outer.addWidget(self.title_bar)
 
         # Trois écrans (demande explicite de l'utilisateur, 25/08/2026) :
@@ -1264,32 +1315,16 @@ class MainWindow(QWidget):
 
         self._build_hub_page()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        self.pages.addWidget(scroll)  # index PAGE_TRANSLATE
-
         self._content = QWidget()
-        scroll.setWidget(self._content)
+        self.pages.addWidget(_page_scroll(self._content))  # index PAGE_TRANSLATE
+        root = _page_layout(self._content)
 
-        root = QVBoxLayout(self._content)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
-
-        back_row = QHBoxLayout()
-        self.back_to_hub_button = QPushButton("← Menu")
-        self.back_to_hub_button.setObjectName("backButton")
-        self.back_to_hub_button.clicked.connect(lambda: self._navigate_to(PAGE_HUB))
-        back_row.addWidget(self.back_to_hub_button)
-        back_row.addStretch()
-        root.addLayout(back_row)
-
-        title = QLabel("TRANSLAX")
-        title.setObjectName("appTitle")
-        subtitle = QLabel("Traduction locale de documents · modèle NLLB-200 sur votre machine")
-        subtitle.setObjectName("appSubtitle")
-        root.addWidget(title)
-        root.addWidget(subtitle)
+        # Titre d'écran (« Traduire » / « Extraire », voir
+        # _on_extract_only_toggled) plutôt que « TRANSLAX » répété : même
+        # logique que « Outils » et « Paramètres » (11/11/2026).
+        self.back_to_hub_button, self.page_title, self.page_subtitle = self._page_header(
+            root, "Traduire", TRANSLATE_SUBTITLE
+        )
 
         # --- Document ---------------------------------------------------
         doc_card = Card("Document à traduire")
@@ -1321,7 +1356,11 @@ class MainWindow(QWidget):
         root.addWidget(doc_card)
 
         # --- Réglages ---------------------------------------------------
-        settings = Card("Réglages")
+        # Ancienne carte unique « Réglages » découpée par thème (11/11/2026,
+        # « plus d'ordre visuel ») : langues et moteur / sortie et options /
+        # Traduire X. Tous les champs alignés sur la même colonne de
+        # libellés (Card.add_field), d'une carte à l'autre.
+        lang_card = Card("Langues et moteur")
         self.src_combo = NoScrollComboBox()
         self.tgt_combo = NoScrollComboBox()
         for code, name in LANGUAGES.items():
@@ -1343,15 +1382,11 @@ class MainWindow(QWidget):
         self.swap_lang_button.clicked.connect(self._swap_languages)
 
         self.tgt_label = QLabel("Langue cible")
+        self.tgt_label.setObjectName("fieldLabel")
 
-        lang_row = QHBoxLayout()
-        lang_row.setSpacing(10)
-        lang_row.addWidget(self._field_label("Langue source"))
-        lang_row.addWidget(self.src_combo, 1)
-        lang_row.addWidget(self.swap_lang_button)
-        lang_row.addWidget(self.tgt_label)
-        lang_row.addWidget(self.tgt_combo, 1)
-        settings.body.addLayout(lang_row)
+        lang_card.add_field(
+            "Langue source", self.src_combo, self.swap_lang_button, self.tgt_label, self.tgt_combo
+        ).setStretch(4, 1)  # les deux listes se partagent la largeur à parts égales
 
         self.model_combo = NoScrollComboBox()
         # Modèles à licence commerciale d'abord, modèles à usage personnel
@@ -1390,17 +1425,16 @@ class MainWindow(QWidget):
         self.src_combo.currentIndexChanged.connect(self._update_model_info)
         self.tgt_combo.currentIndexChanged.connect(self._update_model_info)
 
-        model_row = QHBoxLayout()
-        model_row.setSpacing(10)
-        model_row.addWidget(self._field_label("Modèle"))
-        model_row.addWidget(self.model_combo, 1)
-        settings.body.addLayout(model_row)
+        lang_card.add_field("Modèle", self.model_combo)
 
         self.model_info_label = QLabel()
         self.model_info_label.setObjectName("outputPreview")
         self.model_info_label.setWordWrap(True)
-        settings.body.addWidget(self.model_info_label)
+        lang_card.add_note(self.model_info_label)
         self._update_model_info()
+        root.addWidget(lang_card)
+
+        out_card = Card("Sortie et options")
 
         self.output_edit = QLineEdit()
         self.output_edit.setPlaceholderText("Dossier du fichier source")
@@ -1413,13 +1447,7 @@ class MainWindow(QWidget):
         )
         self.output_reset_button.clicked.connect(self._reset_output_dir)
 
-        out_row = QHBoxLayout()
-        out_row.setSpacing(10)
-        out_row.addWidget(self._field_label("Dossier de sortie"))
-        out_row.addWidget(self.output_edit, 1)
-        out_row.addWidget(self.output_button)
-        out_row.addWidget(self.output_reset_button)
-        settings.body.addLayout(out_row)
+        out_card.add_field("Dossier", self.output_edit, self.output_button, self.output_reset_button)
 
         # Format de sortie (demande explicite de l'utilisateur, 25/08/2026) :
         # le .md reste TOUJOURS écrit et reste seul utilisé pour la reprise
@@ -1431,30 +1459,34 @@ class MainWindow(QWidget):
         self.output_format_combo.addItem("PDF (.pdf)", "pdf")
         self.output_format_combo.currentIndexChanged.connect(self._update_output_preview)
 
-        format_row = QHBoxLayout()
-        format_row.setSpacing(10)
-        format_row.addWidget(self._field_label("Format de sortie"))
-        format_row.addWidget(self.output_format_combo, 1)
-        settings.body.addLayout(format_row)
+        out_card.add_field("Format", self.output_format_combo)
 
         self.output_preview = QLabel()
         self.output_preview.setObjectName("outputPreview")
         self.output_preview.setWordWrap(True)  # sinon le chemin est rogné
-        settings.body.addWidget(self.output_preview)
+        out_card.add_note(self.output_preview)
 
-        self.cleanup_check = QCheckBox("Nettoyer les titres et les traits d'union à la fin")
+        # Interrupteurs animés (ui/widgets.py) à la place des cases à cocher
+        # -- même API que QCheckBox (11/11/2026, « plus d'animations ») --,
+        # rangés sous un libellé « Options » dans la colonne des champs.
+        options = QVBoxLayout()
+        options.setSpacing(2)
+        options_label = _field_label("Options")
+        out_card.add_field(options_label, options)
+
+        self.cleanup_check = ToggleSwitch("Nettoyer les titres et les traits d'union à la fin")
         # Décoché par défaut (demande explicite de l'utilisateur, 25/08/2026) :
         # ce nettoyage reste réversible (voir core/postprocess.py::undo_cleanup,
         # outil "Annuler le nettoyage") mais ne doit plus s'appliquer sans
         # que l'utilisateur l'ait choisi pour CE job précis.
         self.cleanup_check.setChecked(False)
-        settings.body.addWidget(self.cleanup_check)
+        options.addWidget(self.cleanup_check)
 
         # Coché par défaut (demande explicite de l'utilisateur, 10/11/2026) :
         # « sépare chaque paragraphe, 6 lignes max » -- pour le .md comme pour
         # le PDF, voir core/paragraphs.py. Réversible comme le nettoyage :
         # même sauvegarde, même outil « Annuler le nettoyage ».
-        self.split_check = QCheckBox(
+        self.split_check = ToggleSwitch(
             f"Aérer les paragraphes à la fin — {paragraphs.DEFAULT_MAX_LINES} lignes max, coupés entre deux phrases"
         )
         self.split_check.setToolTip(
@@ -1463,9 +1495,9 @@ class MainWindow(QWidget):
             "Le .md reçoit exactement le même découpage. Aucun mot n'est modifié."
         )
         self.split_check.setChecked(True)
-        settings.body.addWidget(self.split_check)
+        options.addWidget(self.split_check)
 
-        self.extract_only_check = QCheckBox(
+        self.extract_only_check = ToggleSwitch(
             "Extraction seulement — texte source nettoyé, sans traduction"
         )
         self.extract_only_check.setToolTip(
@@ -1473,7 +1505,11 @@ class MainWindow(QWidget):
             "sans traduire : utile pour juste récupérer un texte propre dans sa langue d'origine."
         )
         self.extract_only_check.toggled.connect(self._on_extract_only_toggled)
-        settings.body.addWidget(self.extract_only_check)
+        options.addWidget(self.extract_only_check)
+        # Libellé « Options » à la hauteur exacte d'un interrupteur : centré
+        # en face du premier, comme les autres libellés face à leur champ.
+        options_label.setFixedHeight(self.cleanup_check.sizeHint().height())
+        root.addWidget(out_card)
 
         # Lecture seule + clic pour ouvrir ApiKeysDialog (demande explicite
         # de l'utilisateur, 25/08/2026) : plus modifiable directement dans
@@ -1490,11 +1526,6 @@ class MainWindow(QWidget):
             self.api_key_edit.setText(stored_key)
         self.api_key_edit.mousePressEvent = self._open_api_keys_dialog
 
-        api_row = QHBoxLayout()
-        api_row.setSpacing(10)
-        api_row.addWidget(self._field_label("Clé API Anthropic"))
-        api_row.addWidget(self.api_key_edit, 1)
-        settings.body.addLayout(api_row)
 
         # Sélecteur (pas une case à cocher -- demande explicite de
         # l'utilisateur, 26/08/2026) : les 4 fournisseurs déjà évoqués pour
@@ -1528,24 +1559,24 @@ class MainWindow(QWidget):
             "mais facture chaque page et nécessite une clé API personnelle. Grok et ChatGPT sont "
             "préparés pour une future intégration, pas encore utilisables."
         )
-        # Explication complète accessible via le bouton ⓘ plutôt qu'affichée
-        # en permanence (demande explicite de l'utilisateur, 27/08/2026 :
-        # écran principal épuré) -- remplace l'ancien paragraphe fixe.
-        vision_row = QHBoxLayout()
-        vision_row.setSpacing(10)
-        vision_row.addWidget(self._field_label("Modèle OCR (Traduire X)"))
-        vision_row.addWidget(self.vision_model_combo, 1)
-        vision_row.addWidget(_info_button(
-            "Modèle OCR (Traduire X)",
-            "Traduire X utilise l'OCR local (PaddleOCR, gratuit, aucune clé requise) par défaut. "
-            "La clé Anthropic ci-dessus ne sert que si « Claude » est choisi ci-dessus — crée la "
-            "tienne sur console.anthropic.com si besoin. Traduire reste 100 % local et gratuit "
-            "dans tous les cas. Cliquer sur le champ ci-dessus ouvre la fenêtre de saisie "
-            "(prépare aussi xAI/OpenAI pour de futures intégrations).",
-        ))
-        settings.body.addLayout(vision_row)
-
-        root.addWidget(settings)
+        # Carte à part (11/11/2026) : ces deux réglages ne servent QU'AU
+        # bouton Traduire X. Explication complète via le ⓘ de la carte
+        # plutôt qu'affichée en permanence (demande explicite de
+        # l'utilisateur, 27/08/2026 : écran principal épuré).
+        vision_card = Card(
+            "Traduire X — documents scannés",
+            info_title="Modèle OCR (Traduire X)",
+            info=(
+                "Traduire X utilise l'OCR local (PaddleOCR, gratuit, aucune clé requise) par défaut. "
+                "La clé Anthropic ne sert que si « Claude » est choisi — crée la tienne sur "
+                "console.anthropic.com si besoin. Traduire reste 100 % local et gratuit dans tous "
+                "les cas. Cliquer sur le champ de la clé ouvre la fenêtre de saisie (prépare aussi "
+                "xAI/OpenAI pour de futures intégrations)."
+            ),
+        )
+        vision_card.add_field("Modèle OCR", self.vision_model_combo)
+        vision_card.add_field("Clé API", self.api_key_edit)
+        root.addWidget(vision_card)
 
         # --- Actions ----------------------------------------------------
         actions = QHBoxLayout()
@@ -1596,8 +1627,11 @@ class MainWindow(QWidget):
             "Vérifie si la traduction avance toujours -- ne met rien en pause, ne relance rien."
         )
         self.reboost_button.clicked.connect(lambda: self._reboost(automatic=False))
+        # Deux groupes (11/11/2026) : lancer à gauche, piloter à droite,
+        # séparés par un espace plus large que celui entre deux boutons.
         actions.addWidget(self.translate_button, 2)
         actions.addWidget(self.translate_x_button, 2)
+        actions.addSpacing(theme.PAGE_SPACING)
         actions.addWidget(self.pause_button, 1)
         actions.addWidget(self.stop_button, 1)
         actions.addWidget(self.reboost_button, 1)
@@ -1619,7 +1653,9 @@ class MainWindow(QWidget):
 
         # --- Progression ------------------------------------------------
         progress_card = Card("Progression")
-        self.progress_bar = QProgressBar()
+        # Pilule animée (ui/widgets.py) : reflet pendant le travail, segment
+        # qui va et vient tant que la durée est inconnue.
+        self.progress_bar = AnimatedProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
@@ -1655,8 +1691,6 @@ class MainWindow(QWidget):
         self.log.setMinimumHeight(85)
         progress_card.body.addWidget(self.log, 1)
 
-        result_row = QHBoxLayout()
-        result_row.setSpacing(8)
         self.open_file_button = QPushButton("Ouvrir le fichier")
         self.open_file_button.clicked.connect(lambda: self._open(self.result_path))
         self.open_folder_button = QPushButton("Ouvrir le dossier")
@@ -1664,10 +1698,7 @@ class MainWindow(QWidget):
         self.open_folder_button.clicked.connect(self._open_output_location)
         self.open_file_button.setEnabled(False)   # rien à ouvrir tant qu'aucun
         self.open_folder_button.setEnabled(False)  # résultat n'existe
-        result_row.addStretch()
-        result_row.addWidget(self.open_file_button)
-        result_row.addWidget(self.open_folder_button)
-        progress_card.body.addLayout(result_row)
+        progress_card.add_actions(self.open_file_button, self.open_folder_button)
         root.addWidget(progress_card, 1)
 
         # Hors de la zone de défilement, délibérément : toujours visible en
@@ -1692,106 +1723,83 @@ class MainWindow(QWidget):
         un fichier déjà traduit (voir core/postprocess.py::undo_cleanup).
         """
         page = QWidget()
-        root = QVBoxLayout(page)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
-
-        back_row = QHBoxLayout()
-        back_btn = QPushButton("← Menu")
-        back_btn.setObjectName("backButton")
-        back_btn.clicked.connect(lambda: self._navigate_to(PAGE_HUB))
-        back_row.addWidget(back_btn)
-        back_row.addStretch()
-        root.addLayout(back_row)
-
-        title = QLabel("Outils")
-        title.setObjectName("appTitle")
-        subtitle = QLabel("Fonctionnalités indépendantes de la traduction elle-même.")
-        subtitle.setObjectName("appSubtitle")
-        root.addWidget(title)
-        root.addWidget(subtitle)
+        root = _page_layout(page)
+        self._page_header(root, "Outils", "Fonctionnalités indépendantes de la traduction elle-même.")
 
         # Aérer après coup (10/11/2026) : pour un document traduit AVANT que
         # l'aération ne soit faite automatiquement en fin de traduction, ou
         # traduit avec la case décochée -- voir core/paragraphs.py.
         reflow_card = Card(f"Aérer un document déjà traduit ({paragraphs.DEFAULT_MAX_LINES} lignes max)")
-        reflow_intro = QLabel(
-            "Choisissez un fichier .md déjà traduit : chaque paragraphe trop long est redécoupé "
-            f"entre deux phrases, pour ne jamais dépasser {paragraphs.DEFAULT_MAX_LINES} lignes. "
-            "Aucun mot n'est modifié, et une sauvegarde est gardée (« Annuler le nettoyage » ci-dessous la restaure)."
-        )
-        reflow_intro.setWordWrap(True)
-        reflow_card.body.addWidget(reflow_intro)
+        reflow_card.body.addWidget(_wrapped_label(
+            "Chaque paragraphe trop long d'un .md déjà traduit est redécoupé entre deux phrases, "
+            f"pour ne jamais dépasser {paragraphs.DEFAULT_MAX_LINES} lignes. Aucun mot n'est modifié, "
+            "et une sauvegarde est gardée (« Annuler le nettoyage » ci-dessous la restaure)."
+        ))
 
-        reflow_row = QHBoxLayout()
         self.reflow_path_edit = QLineEdit()
         self.reflow_path_edit.setPlaceholderText("Fichier .md à aérer…")
         self.reflow_path_edit.textChanged.connect(self._update_reflow_status)
         browse_reflow_btn = QPushButton("Parcourir…")
         browse_reflow_btn.clicked.connect(self._pick_reflow_file)
-        reflow_row.addWidget(self.reflow_path_edit, 1)
-        reflow_row.addWidget(browse_reflow_btn)
-        reflow_card.body.addLayout(reflow_row)
+        reflow_card.add_field("Fichier", self.reflow_path_edit, browse_reflow_btn)
 
-        self.reflow_pdf_check = QCheckBox("Générer aussi le PDF (texte agrandi, numéros de page)")
+        self.reflow_pdf_check = ToggleSwitch("Générer aussi le PDF (texte agrandi, numéros de page)")
         self.reflow_pdf_check.setChecked(True)
-        reflow_card.body.addWidget(self.reflow_pdf_check)
+        reflow_card.add_note(self.reflow_pdf_check)
 
-        self.reflow_status_label = QLabel("")
+        self.reflow_status_label = _wrapped_label("")
         self.reflow_status_label.setObjectName("outputPreview")
-        self.reflow_status_label.setWordWrap(True)
-        reflow_card.body.addWidget(self.reflow_status_label)
+        self.reflow_status_label.setVisible(False)  # n'apparaît qu'avec un message (voir _set_status)
+        reflow_card.add_note(self.reflow_status_label)
 
-        reflow_button_row = QHBoxLayout()
-        reflow_button_row.addStretch()
         self.reflow_button = QPushButton("Aérer le document")
         self.reflow_button.setObjectName("primary")
         self.reflow_button.setEnabled(False)
         self.reflow_button.clicked.connect(self._on_reflow_clicked)
-        reflow_button_row.addWidget(self.reflow_button)
-        reflow_card.body.addLayout(reflow_button_row)
+        reflow_card.add_actions(self.reflow_button)
         root.addWidget(reflow_card)
 
+        # Retour à la ligne indispensable (11/11/2026) : sans lui, ce texte
+        # sur une seule ligne rendait toute la page plus large que la fenêtre
+        # (barre de défilement horizontale, boutons coupés à droite).
         undo_card = Card("Annuler le nettoyage des titres et traits d'union")
-        undo_card.body.addWidget(QLabel(
-            "Choisissez un fichier .md déjà traduit par TRANSLAX avec le nettoyage activé : "
-            "restaure exactement le contenu tel qu'il était avant ce nettoyage."
+        undo_card.body.addWidget(_wrapped_label(
+            "Restaure un .md déjà traduit exactement tel qu'il était avant le nettoyage de fin "
+            "(titres, traits d'union, paragraphes aérés)."
         ))
 
-        file_row = QHBoxLayout()
         self.undo_path_edit = QLineEdit()
         self.undo_path_edit.setPlaceholderText("Fichier .md à restaurer…")
         self.undo_path_edit.textChanged.connect(self._update_undo_status)
         browse_undo_btn = QPushButton("Parcourir…")
         browse_undo_btn.clicked.connect(self._pick_undo_file)
-        file_row.addWidget(self.undo_path_edit, 1)
-        file_row.addWidget(browse_undo_btn)
-        undo_card.body.addLayout(file_row)
+        undo_card.add_field("Fichier", self.undo_path_edit, browse_undo_btn)
 
-        self.undo_status_label = QLabel("")
+        self.undo_status_label = _wrapped_label("")
         self.undo_status_label.setObjectName("outputPreview")
-        self.undo_status_label.setWordWrap(True)
-        undo_card.body.addWidget(self.undo_status_label)
+        self.undo_status_label.setVisible(False)
+        undo_card.add_note(self.undo_status_label)
 
-        undo_row = QHBoxLayout()
-        undo_row.addStretch()
         self.undo_button = QPushButton("Annuler le nettoyage")
         self.undo_button.setObjectName("primary")
         self.undo_button.setEnabled(False)
         self.undo_button.clicked.connect(self._on_undo_cleanup_clicked)
-        undo_row.addWidget(self.undo_button)
-        undo_card.body.addLayout(undo_row)
+        undo_card.add_actions(self.undo_button)
 
         root.addWidget(undo_card)
         root.addStretch(1)
 
-        # Défilante, comme les autres écrans : deux cartes ne tiennent plus
-        # forcément à la taille minimale de la fenêtre.
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(page)
-        self.pages.addWidget(scroll)  # index PAGE_TOOLS
+        self.pages.addWidget(_page_scroll(page))  # index PAGE_TOOLS
+
+    @staticmethod
+    def _set_status(label: QLabel, text: str) -> None:
+        """Message d'état sous un formulaire : déroulé en douceur quand il
+        apparaît, masqué quand il est vide (plus de cadre vide affiché)."""
+        label.setText(text)
+        if text:
+            animations.reveal(label)
+        else:
+            label.setVisible(False)
 
     # ------------------------------------------- outil : aérer un .md existant
     def _pick_reflow_file(self) -> None:
@@ -1822,22 +1830,22 @@ class MainWindow(QWidget):
             return  # aération en cours : le bouton reste grisé jusqu'à la fin
         text = self.reflow_path_edit.text().strip()
         if not text:
-            self.reflow_status_label.setText("")
+            self._set_status(self.reflow_status_label, "")
             self.reflow_button.setEnabled(False)
             return
         blocker = self._reflow_blocker(Path(text))
-        self.reflow_status_label.setText(blocker or "Prêt à aérer ce document.")
+        self._set_status(self.reflow_status_label, blocker or "Prêt à aérer ce document.")
         self.reflow_button.setEnabled(blocker is None)
 
     def _on_reflow_clicked(self) -> None:
         path = Path(self.reflow_path_edit.text().strip())
         blocker = self._reflow_blocker(path)  # revérifié : l'état a pu changer depuis la saisie
         if blocker is not None:
-            self.reflow_status_label.setText(blocker)
+            self._set_status(self.reflow_status_label, blocker)
             self.reflow_button.setEnabled(False)
             return
         self.reflow_button.setEnabled(False)
-        self.reflow_status_label.setText("Aération en cours…")
+        self._set_status(self.reflow_status_label, "Aération en cours…")
         self._reflow_thread = QThread(self)
         self._reflow_worker = ReflowWorker(path, make_pdf=self.reflow_pdf_check.isChecked())
         self._reflow_worker.moveToThread(self._reflow_thread)
@@ -1855,12 +1863,12 @@ class MainWindow(QWidget):
         message = report.summary()
         if pdf_path is not None:
             message += f"\nPDF : {pdf_path}"
-        self.reflow_status_label.setText(message)
+        self._set_status(self.reflow_status_label, message)
         self._update_undo_status()
 
     @Slot(str)
     def _on_reflow_failed(self, message: str) -> None:
-        self.reflow_status_label.setText(f"Échec : {message}")
+        self._set_status(self.reflow_status_label, f"Échec : {message}")
 
     @Slot()
     def _on_reflow_thread_finished(self) -> None:
@@ -1880,18 +1888,18 @@ class MainWindow(QWidget):
         from core import postprocess
         text = self.undo_path_edit.text().strip()
         if not text:
-            self.undo_status_label.setText("")
+            self._set_status(self.undo_status_label, "")
             self.undo_button.setEnabled(False)
             return
         path = Path(text)
         if not path.exists():
-            self.undo_status_label.setText("Fichier introuvable.")
+            self._set_status(self.undo_status_label, "Fichier introuvable.")
             self.undo_button.setEnabled(False)
         elif postprocess.has_backup(path):
-            self.undo_status_label.setText("Une sauvegarde d'avant nettoyage existe pour ce fichier : prêt à annuler.")
+            self._set_status(self.undo_status_label, "Une sauvegarde d'avant nettoyage existe pour ce fichier : prêt à annuler.")
             self.undo_button.setEnabled(True)
         else:
-            self.undo_status_label.setText(
+            self._set_status(self.undo_status_label, 
                 "Aucune sauvegarde trouvée pour ce fichier -- soit il n'a jamais été nettoyé, "
                 "soit le nettoyage a déjà été annulé une fois."
             )
@@ -1920,8 +1928,11 @@ class MainWindow(QWidget):
         self._update_undo_status()
 
     # --------------------------------------------------- barre de titre
-    def _create_title_bar(self, button_style: str) -> TitleBar:
-        title_bar = TitleBar(self, button_style=button_style)
+    def _create_title_bar(self) -> TitleBar:
+        # Présentation imposée par le système (demande explicite de
+        # l'utilisateur, 11/11/2026) : boutons à droite sous Windows,
+        # pastilles à gauche seulement sur Mac -- voir ui/titlebar.py.
+        title_bar = TitleBar(self)
         icon_path = _asset_path("icon.ico")
         if icon_path.exists():
             title_bar.set_icon(QIcon(str(icon_path)).pixmap(18, 18))
@@ -1930,22 +1941,6 @@ class MainWindow(QWidget):
         title_bar.close_clicked.connect(self.close)
         title_bar.set_maximized(self._is_zoomed())
         return title_bar
-
-    def _set_window_button_style(self, button_style: str) -> None:
-        """Change la présentation des boutons de fenêtre (page Paramètres)
-        immédiatement, sans redémarrer : la barre de titre est simplement
-        reconstruite à la même place, puis le choix est mémorisé."""
-        if button_style == self.title_bar.button_style:
-            return
-        settings_mod.set_window_button_style(button_style)
-        old = self.title_bar
-        outer = self.layout()
-        new = self._create_title_bar(button_style)
-        new.set_window_active(self.isActiveWindow())
-        outer.replaceWidget(old, new)
-        old.hide()
-        old.deleteLater()
-        self.title_bar = new
 
     def _is_zoomed(self) -> bool:
         return self.isMaximized() or self.isFullScreen()
@@ -1977,6 +1972,11 @@ class MainWindow(QWidget):
         # La fenêtre native n'existe qu'à partir d'ici : c'est le premier
         # moment où DWM (Windows 11) peut l'arrondir.
         self._refresh_window_chrome()
+        if not self._intro_played:
+            # Arrivée en cascade du hall d'accueil, une seule fois, une fois
+            # la mise en page réelle faite (d'où le délai nul).
+            self._intro_played = True
+            QTimer.singleShot(0, lambda: animations.play_page_transition(self, self.pages, intro=True))
 
     def paintEvent(self, event) -> None:  # noqa: N802 - API Qt
         if window_effects.uses_painted_corners():
@@ -2062,10 +2062,8 @@ class MainWindow(QWidget):
 
     @staticmethod
     def _field_label(text: str) -> QLabel:
-        """Libellé de champ à largeur fixe, pour aligner les lignes entre elles."""
-        label = QLabel(text)
-        label.setMinimumWidth(110)
-        return label
+        """Libellé de champ -- voir la fonction de module `_field_label`."""
+        return _field_label(text)
 
     # -------------------------------------------------------- fichier source
     def _pick_file(self) -> None:
@@ -2258,6 +2256,8 @@ class MainWindow(QWidget):
         """
         self.translate_button.setText("Extraire" if checked else "Traduire")
         self.translate_x_button.setText("Extraire X" if checked else "Traduire X")
+        self.page_title.setText("Extraire" if checked else "Traduire")
+        self.page_subtitle.setText(EXTRACT_SUBTITLE if checked else TRANSLATE_SUBTITLE)
         self.tgt_combo.setEnabled(not checked)
         self.tgt_label.setEnabled(not checked)
         self.swap_lang_button.setEnabled(not checked)
@@ -3051,7 +3051,13 @@ class MainWindow(QWidget):
             self._keep_awake.start()
         else:
             self._keep_awake.stop()
-        self.keep_awake_label.setVisible(running)
+        # Bandeau déroulé en douceur à l'apparition ; reflet animé sur la
+        # barre seulement pendant le travail (voir ui/widgets.py).
+        if running:
+            animations.reveal(self.keep_awake_label)
+        else:
+            self.keep_awake_label.setVisible(False)
+        self.progress_bar.set_active(running)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - API Qt
         if self.thread is not None and self.thread.isRunning():
