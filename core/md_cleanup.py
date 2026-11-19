@@ -52,7 +52,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import document_flow, page_markers as page_markers_mod, paragraphs as paragraphs_mod
+from . import document_flow, page_cleanup as page_cleanup_mod, page_markers as page_markers_mod
+from . import paragraphs as paragraphs_mod
 
 # --- Mots en majuscules ------------------------------------------------------
 _UP = "A-ZÀ-ÖØ-ÞŒÆ"
@@ -76,9 +77,7 @@ _LOOSE_AFTER_RE = re.compile(rf"(?<![\w'’])({_LOOSE_RUN})[ \t]+(\d{{1,3}})(?![
 
 # Le mot « chapitre » dans les langues sources courantes : le nettoyage passe
 # aussi sur le texte SOURCE avant traduction (19/11/2026), souvent anglais.
-_CHAPTER_WORDS = frozenset({
-    "CHAPITRE", "CHAPTER", "CAPÍTULO", "CAPITULO", "CAPITOLO", "KAPITEL", "HOOFDSTUK",
-})
+_CHAPTER_WORDS = page_cleanup_mod.CHAPTER_WORDS   # une seule liste pour tout TRANSLAX
 _CHAPTER_WORD = "(?:" + "|".join(sorted(_CHAPTER_WORDS, key=len, reverse=True)) + ")"
 
 # Une entrée de table des matières : « CHAPITRE XIV. — PAR NOS HABITUDES 7 ».
@@ -156,7 +155,27 @@ def _is_toc_context(text: str, start: int) -> bool:
     return bool(_TOC_BEFORE_RE.search(text[max(0, start - 30):start]))
 
 
-def detect_running_headers(text: str) -> list[RunningHeader]:
+def _normalize_words(text: str) -> str:
+    return " ".join(text.upper().split())
+
+
+def _is_protected(phrase: str, protected: list[str]) -> bool:
+    """Un en-tête que l'utilisateur a choisi de GARDER (décoché dans la
+    fenêtre de vérification des pages), un morceau de lui (« METHODS OF »
+    pour « METHODS OF DEFENCE »), ou sa coquille d'OCR."""
+    from difflib import SequenceMatcher
+
+    candidate = f" {phrase} "
+    for kept in protected:
+        padded = f" {kept} "
+        if candidate in padded or padded in candidate:
+            return True
+        if SequenceMatcher(None, phrase, kept).ratio() >= _VARIANT_SIMILARITY:
+            return True
+    return False
+
+
+def detect_running_headers(text: str, protected: list[str] | tuple[str, ...] = ()) -> list[RunningHeader]:
     """
     Repère les en-têtes / pieds de page courants du document.
 
@@ -187,9 +206,12 @@ def detect_running_headers(text: str) -> list[RunningHeader]:
         for k in range(1, len(words) + 1):
             add(words[-k:], int(match.group(2)))
 
+    kept = [_normalize_words(p) for p in protected if p.strip()]
     candidates: list[RunningHeader] = []
     for phrase, numbers in pages.items():
         words = phrase.split()
+        if kept and _is_protected(phrase, kept):
+            continue
         if _letters(phrase) < _MIN_LETTERS or all(_ROMAN_RE.match(w) for w in words):
             continue
         if _CHAPTER_WORDS.intersection(words):
@@ -513,17 +535,23 @@ def clean_markdown(
     extract_headings: bool = True,
     aerate: bool = False,
     max_lines: int = paragraphs_mod.DEFAULT_MAX_LINES,
+    protected: list[str] | tuple[str, ...] = (),
+    skip_connectors: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[str, MdCleanupReport]:
-    """Enchaîne les étapes du docstring du module sur le contenu d'un .md."""
+    """Enchaîne les étapes du docstring du module sur le contenu d'un .md.
+
+    `protected` / `skip_connectors` : ce que l'utilisateur a choisi de GARDER
+    dans la fenêtre de vérification des pages (voir pipeline.run_job) --
+    jamais retiré ici par une autre porte."""
     report = MdCleanupReport()
     text = text.replace("\r\n", "\n").replace("\f", "\n\n")
 
     # 0. Liste noire des numéros de page (« 17 of 103 »…) -- EN PREMIER : collés
     # à un en-tête, ils fausseraient sa détection ; retirés, ils laissent deux
     # moitiés de phrase que le recollage ci-dessous remet ensemble.
-    text, report.page_markers = page_markers_mod.strip_markers(text)
+    text, report.page_markers = page_markers_mod.strip_markers(text, skip_connectors=skip_connectors)
 
-    report.headers = detect_running_headers(text)
+    report.headers = detect_running_headers(text, protected)
     text = remove_running_headers(text, report.headers, report)
 
     flow = document_flow.FlowReport()
@@ -550,7 +578,13 @@ _PARAGRAPH_MARK = "⟦¶⟧"
 _HEADING_RE = re.compile(r"(#{1,6})[ \t]+(.+)", re.DOTALL)
 
 
-def clean_segments(segments: list[dict], *, extract_headings: bool = True) -> tuple[list[dict], MdCleanupReport]:
+def clean_segments(
+    segments: list[dict],
+    *,
+    extract_headings: bool = True,
+    protected: list[str] | tuple[str, ...] = (),
+    skip_connectors: frozenset[str] | set[str] = frozenset(),
+) -> tuple[list[dict], MdCleanupReport]:
     """
     Le même nettoyage, appliqué au texte SOURCE juste avant la traduction
     (demande explicite de l'utilisateur, 19/11/2026, surtout pour Traduire X :
@@ -581,7 +615,10 @@ def clean_segments(segments: list[dict], *, extract_headings: bool = True) -> tu
             blocks.append(f"⟦{len(kept)}⟧")
             kept.append(segment)
 
-    cleaned, report = clean_markdown("\n\n".join(blocks) + "\n", extract_headings=extract_headings, aerate=False)
+    cleaned, report = clean_markdown(
+        "\n\n".join(blocks) + "\n", extract_headings=extract_headings, aerate=False,
+        protected=protected, skip_connectors=skip_connectors,
+    )
 
     out: list[dict] = []
 

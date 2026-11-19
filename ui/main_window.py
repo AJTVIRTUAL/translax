@@ -582,6 +582,111 @@ class ResumeJobsDialog(QDialog):
         self._rebuild_rows()
 
 
+class CleanupReviewDialog(QDialog):
+    """
+    Fenêtre « Nettoyage des pages détecté » -- une case par élément détecté
+    (demande explicite de l'utilisateur, 19/11/2026 : « me permettre de
+    décocher un groupe si je souhaite laisser des éléments répétés […] comme
+    ça ça ne supprime pas des choses inoffensives »).
+
+    Coché : retiré. Décoché : laissé dans le texte, et protégé du nettoyage
+    avancé et de la liste noire (voir pipeline.run_job). Les trois boutons
+    restent ceux d'avant ; la réponse est un `page_cleanup.CleanupChoice`
+    dans `self.choice` (« Annuler » ou fermer la fenêtre = "cancel").
+    """
+
+    def __init__(self, report: page_cleanup.PageCleanupReport, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Nettoyage des pages détecté")
+        self.resize(640, 440)
+        self.choice = page_cleanup.CleanupChoice(decision="cancel")
+
+        outer = QVBoxLayout(self)
+        outer.setSpacing(10)
+        headline = _wrapped_label(
+            f"{report.lines_removed} ligne(s) d'en-tête/pied de page ou de numérotation "
+            f"détectées sur {report.total_pages} pages."
+        )
+        outer.addWidget(headline)
+        hint = _wrapped_label(
+            "Décochez ce que vous voulez garder dans le texte : tout ce qui reste coché est retiré."
+        )
+        hint.setObjectName("outputPreview")
+        outer.addWidget(hint)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        rows = QVBoxLayout(content)
+        rows.setSpacing(4)
+
+        # Indice dans report.groups -> interrupteur (l'indice est ce que
+        # renvoie CleanupChoice.keep, quel que soit l'ordre d'affichage).
+        self.group_checks: dict[int, ToggleSwitch] = {}
+        for index, group in report.ordered_groups():
+            switch = ToggleSwitch(page_cleanup.PageCleanupReport.group_line(group))
+            switch.setChecked(True)
+            examples = list(dict.fromkeys(c.text.strip() for c in group.occurrences))[:3]
+            if examples:
+                switch.setToolTip("Exemples dans le document :\n" + "\n".join(f"  {e}" for e in examples))
+            switch.toggled.connect(lambda checked, s=switch, g=group: self._relabel(s, g, checked))
+            self.group_checks[index] = switch
+            rows.addWidget(switch)
+
+        # Nettoyage avancé (en-têtes en pleine phrase, liste noire) : une case
+        # de plus quand il a quelque chose à retirer -- même fenêtre, aucune
+        # pause de plus (choix de l'utilisateur, 19/11/2026).
+        self.advanced_check: ToggleSwitch | None = None
+        if report.extra_lines:
+            self.advanced_check = ToggleSwitch("Nettoyage avancé — en plein texte et numéros de page")
+            self.advanced_check.setChecked(True)
+            rows.addWidget(self.advanced_check)
+            for line in report.extra_lines:
+                detail = _wrapped_label(line)
+                detail.setObjectName("outputPreview")
+                detail.setContentsMargins(44, 0, 0, 0)
+                rows.addWidget(detail)
+        rows.addStretch(1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(self.reject)
+        self.original_button = QPushButton("Utiliser l'original")
+        self.original_button.setToolTip("Ne rien retirer du tout : le texte est traduit tel qu'extrait.")
+        self.original_button.clicked.connect(self._use_original)
+        self.clean_button = QPushButton("Utiliser la version nettoyée")
+        self.clean_button.setObjectName("primary")
+        self.clean_button.setDefault(True)
+        self.clean_button.clicked.connect(self._use_cleaned)
+        actions.addWidget(cancel_btn)
+        actions.addWidget(self.original_button)
+        actions.addWidget(self.clean_button)
+        outer.addLayout(actions)
+
+    @staticmethod
+    def _relabel(switch: ToggleSwitch, group, checked: bool) -> None:
+        if checked:
+            switch.setText(page_cleanup.PageCleanupReport.group_line(group))
+        else:
+            switch.setText(f"{group.label()} — {group.count} occurrences gardées dans le texte")
+
+    def _use_cleaned(self) -> None:
+        self.choice = page_cleanup.CleanupChoice(
+            decision="clean",
+            keep=frozenset(i for i, switch in self.group_checks.items() if not switch.isChecked()),
+            advanced=self.advanced_check.isChecked() if self.advanced_check is not None else True,
+        )
+        self.accept()
+
+    def _use_original(self) -> None:
+        self.choice = page_cleanup.CleanupChoice(decision="original")
+        self.accept()
+
+
 class VisionReviewDialog(QDialog):
     """
     Récapitulatif de l'extraction vision (Traduire X), montré avant que la
@@ -2936,25 +3041,10 @@ class MainWindow(QWidget):
         ci-dessous — indispensable pour ne jamais toucher au fichier avant
         que l'utilisateur ait tranché.
         """
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Information)
-        box.setWindowTitle("Nettoyage des pages détecté")
-        box.setText(
-            f"{report.lines_removed} ligne(s) d'en-tête/pied de page ou de numérotation "
-            f"détectées sur {report.total_pages} pages."
-        )
-        box.setInformativeText("\n".join(report.summary_lines()))
-        clean_btn = box.addButton("Utiliser la version nettoyée", QMessageBox.AcceptRole)
-        original_btn = box.addButton("Utiliser l'original", QMessageBox.DestructiveRole)
-        box.addButton("Annuler", QMessageBox.RejectRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is clean_btn:
-            decision = "clean"
-        elif clicked is original_btn:
-            decision = "original"
-        else:
-            decision = "cancel"
+        # Une case par élément détecté (19/11/2026) : voir CleanupReviewDialog.
+        dialog = CleanupReviewDialog(report, self)
+        dialog.exec()
+        decision = dialog.choice
         if self.worker is not None:
             self.worker.set_cleanup_decision(decision)
 

@@ -3534,7 +3534,66 @@ proposé, en attente de l'accord de l'utilisateur.
 
 **Version 1.25.0** (19/11/2026) : construite dans une copie isolée (traduction
 de l'utilisateur en cours : `dist\` jamais réécrit, exe non lancé pour test,
-seuls les tests sans risque relancés).
+seuls les tests sans risque relancés). Publiée sur GitHub (release `v1.25.0`).
+
+## 5 quadragies quattuor. Une case par élément dans « Nettoyage des pages détecté » (ajouté le 19/11/2026)
+
+Demande explicite de l'utilisateur, capture à l'appui (« Numéros de page
+« N of M » — 103 », « CHAPTER — 8 », « METHODS OF DEFENCE — 3 ») : « me
+permettre de décocher un groupe si je souhaite laisser des éléments répétés,
+par exemple les chapter sont souvent inoffensifs […] comme ça ça ne
+supprime pas des choses inoffensives ».
+
+- **Une case par élément**, cochée par défaut (coché = retiré, décoché =
+  gardé ; le libellé devient « … occurrences gardées dans le texte »), avec
+  des exemples réels du document en bulle d'aide ; plus une case « Nettoyage
+  avancé » quand il a quelque chose à retirer (ses lignes en dessous). Mêmes
+  trois boutons qu'avant. Bureau : `ui/main_window.py::CleanupReviewDialog` ;
+  web : `TRANSLAX_WEB/src/dialogs/CleanupReviewDialog.svelte`.
+- **Réponse** : `page_cleanup.CleanupChoice(decision, keep, advanced)` --
+  `keep` = indices des groupes décochés. `CleanupChoice.of` comprend encore
+  une simple chaîne (« clean »…) : ligne de commande et anciens appelants
+  inchangés.
+- **Un élément gardé l'est pour de bon** (sinon décocher ne servirait à
+  rien) : retiré du rapport avant `strip_running_headers` ; ses lignes
+  exactes protégées de `document_flow.drop_repeated_lines` (`keep_lines`) ;
+  son texte, ses morceaux et ses coquilles protégés de l'apprentissage des
+  en-têtes du nettoyage avancé (`md_cleanup.detect_running_headers(protected=…)`),
+  avant ET après la traduction ; une pagination gardée (« N of M ») fait
+  sauter les marqueurs de même mot de liaison dans la liste noire
+  (`PageMarker.connector`, `strip_markers(skip_connectors=…)`). Journal :
+  « Gardés à votre demande : « … ». »
+- **Titres de chapitre jamais proposés** : « CHAPTER III » en haut de la page
+  où commence un chapitre, privé de son numéro, devenait « CHAPTER » répété
+  → pris pour un en-tête, et TOUS les titres de chapitre disparaissaient.
+  `page_cleanup.is_chapter_title_group` les écarte (liste `CHAPTER_WORDS`,
+  partagée désormais avec `md_cleanup`).
+- **Web** : la question envoyée au navigateur porte `groups` (indice,
+  libellé, ligne, nombre, exemples) et `advanced` ; `POST
+  jobs/{id}/decision` accepte `keep` et `advanced`. Serveur web redémarré
+  (aucune traduction web en cours), relancé hors de la session de l'outil
+  (WMI) pour qu'il ne s'arrête plus avec elle -- journal dans
+  `~/TRANSLAX_Serveur/serveur_web.log`.
+
+**`tests/test_installer.py` corrigé** (accord de l'utilisateur, 19/11/2026) :
+il fermait la traduction en cours de l'utilisateur -- `close_running_translax`
+était appelé directement (§5) ET par la vraie fenêtre d'installation (§8,
+installation silencieuse). Désormais, dès l'import du fichier : nom d'image
+propre au test (`TRANSLAX-test-<pid>.exe`) et garde-fou sur
+`subprocess.run` qui REFUSE, avant de la lancer, toute commande visant le
+vrai `TRANSLAX.exe`. Vérifié à blanc (trois commandes interdites bloquées),
+puis le test complet lancé PENDANT une traduction de l'utilisateur : mêmes
+processus TRANSLAX avant et après.
+
+**Version 1.26.0** (19/11/2026) : construite dans une copie isolée, en
+priorité basse (traduction de l'utilisateur en cours dans TRANSLAX de
+bureau : jamais arrêté, `dist\` jamais réécrit).
+
+Tests : `tests/test_ui.py` 6b (fenêtre réelle : en-tête décoché gardé 6/6,
+pied de page coché retiré, « CHAPTER I/II/III » ni proposés ni retirés,
+journal), `tests/test_page_markers.py` §7 (« N of M » gardé malgré la liste
+noire, case avancée décochée, compatibilité des réponses en texte),
+`TRANSLAX_serveur/tests/test_webserver.py::test_page_cleanup_checkboxes_keep_a_group`.
 
 ## 6. Interface
 

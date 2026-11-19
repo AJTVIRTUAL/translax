@@ -155,7 +155,13 @@ def _maybe_export_pdf(job: "Job", md_path: Path, status, notes: list[str]) -> Pa
 
 
 def _maybe_clean_source_segments(
-    enabled: bool, segments: list[dict], status, notes: list[str]
+    enabled: bool,
+    segments: list[dict],
+    status,
+    notes: list[str],
+    *,
+    protected: list[str] | tuple[str, ...] = (),
+    skip_connectors: frozenset[str] = frozenset(),
 ) -> tuple[list[dict], md_cleanup.MdCleanupReport | None]:
     """
     Nettoyage avancé du texte SOURCE, juste avant la traduction (demande
@@ -176,7 +182,7 @@ def _maybe_clean_source_segments(
         return segments, None
     status("Nettoyage avancé du texte source (en-têtes en pleine phrase, mots coupés, titres)…")
     try:
-        cleaned, report = md_cleanup.clean_segments(segments)
+        cleaned, report = md_cleanup.clean_segments(segments, protected=protected, skip_connectors=skip_connectors)
     except Exception as exc:  # noqa: BLE001 - jamais bloquer la traduction pour la mise en forme
         notes.append(f"Nettoyage avancé du texte source échoué ({exc}) -- texte traduit tel quel.")
         return segments, None
@@ -185,7 +191,15 @@ def _maybe_clean_source_segments(
     return cleaned, report
 
 
-def _maybe_advanced_cleanup(enabled: bool, md_path: Path, status, notes: list[str]) -> md_cleanup.MdCleanupReport | None:
+def _maybe_advanced_cleanup(
+    enabled: bool,
+    md_path: Path,
+    status,
+    notes: list[str],
+    *,
+    protected: list[str] | tuple[str, ...] = (),
+    skip_connectors: frozenset[str] = frozenset(),
+) -> md_cleanup.MdCleanupReport | None:
     """
     Nettoyage avancé du .md terminé (voir core/md_cleanup.py) : exactement
     le traitement de l'outil « Nettoyage avancé d'un .md », mais SUR PLACE.
@@ -209,7 +223,9 @@ def _maybe_advanced_cleanup(enabled: bool, md_path: Path, status, notes: list[st
     status("Nettoyage avancé — vérification finale (en-têtes/pieds de page répétés, mots coupés, titres)…")
     try:
         content = md_path.read_text(encoding="utf-8")
-        cleaned, report = md_cleanup.clean_markdown(content, extract_headings=True, aerate=False)
+        cleaned, report = md_cleanup.clean_markdown(
+            content, extract_headings=True, aerate=False, protected=protected, skip_connectors=skip_connectors,
+        )
         if cleaned != content.replace("\r\n", "\n"):
             bpath = postprocess.backup_path(md_path)
             if not bpath.exists():
@@ -446,6 +462,11 @@ def run_job(
     # vérification des pages, qui liste aussi ce que lui retirerait.
     advanced = job.advanced_cleanup
     source_cleanup_report = None
+    # Ce que l'utilisateur a décoché dans la fenêtre de vérification des pages
+    # (voir `page_cleanup.CleanupChoice`) : jamais retiré par une autre porte.
+    keep_lines: frozenset[str] = frozenset()
+    protected: list[str] = []
+    skip_connectors: frozenset[str] = frozenset()
 
     vision_report = None
     layout_report = None
@@ -565,7 +586,14 @@ def run_job(
                     page_report.extra_lines = md_cleanup.preview_lines(cleaned_text)
                 except Exception:  # noqa: BLE001 - un aperçu raté ne bloque rien
                     page_report.extra_lines = []
-            page_decision = on_page_cleanup(page_report) if on_page_cleanup is not None else "clean"
+            # Réponse : "clean"/"original"/"cancel" (ligne de commande, anciens
+            # appelants) ou un `CleanupChoice` -- groupes DÉCOCHÉS à garder,
+            # case du nettoyage avancé (demande explicite de l'utilisateur,
+            # 19/11/2026 : « me permettre de décocher un groupe »).
+            choice = page_cleanup.CleanupChoice.of(
+                on_page_cleanup(page_report) if on_page_cleanup is not None else "clean"
+            )
+            page_decision = choice.decision
             if page_decision == "cancel":
                 return Result(
                     output_path=out_path,
@@ -575,6 +603,21 @@ def run_job(
                     page_cleanup_report=page_report,
                     notes=["Annulé après revue du nettoyage des pages — aucun segment n'a été traduit."],
                 )
+            kept_groups = [g for i, g in enumerate(page_report.groups) if i in choice.keep]
+            if page_decision == "clean" and kept_groups:
+                cleaned_text = page_cleanup.strip_running_headers(raw_text, page_report.without(choice.keep))
+                # Protégés jusqu'au bout : ni les lignes répétées
+                # (document_flow), ni la liste noire, ni le nettoyage avancé ne
+                # les retirent par une autre porte.
+                keep_lines = frozenset(
+                    document_flow.normalize_line(c.text) for g in kept_groups for c in g.occurrences
+                )
+                protected = [g.representative for g in kept_groups if not (g.is_page_number or g.is_pagination)]
+                skip_connectors = frozenset(g.representative.strip().lower() for g in kept_groups if g.is_pagination)
+                status("Gardés à votre demande : " + ", ".join(g.label() for g in kept_groups) + ".")
+            if not choice.advanced:
+                advanced = False
+                status("Nettoyage avancé décoché pour ce document.")
         raw_text = cleaned_text if page_decision == "clean" else raw_text
         if page_decision == "original":
             advanced = False  # garder les en-têtes : ni avant, ni après la traduction
@@ -587,7 +630,7 @@ def run_job(
         # l'utilisateur, 19/11/2026). Fait partie du nettoyage avancé.
         if advanced:
             try:
-                raw_text, marker_report = page_markers.strip_markers(raw_text)
+                raw_text, marker_report = page_markers.strip_markers(raw_text, skip_connectors=skip_connectors)
             except Exception as exc:  # noqa: BLE001 - jamais bloquant
                 notes.append(f"Liste noire des numéros de page non appliquée ({exc}).")
             else:
@@ -601,7 +644,7 @@ def run_job(
         # texte « original », il a choisi de garder les en-tetes et pieds de
         # page -- les retirer ici par une autre porte irait contre ce choix.
         raw_text, flow_report = document_flow.repair(
-            raw_text, drop_repeats=(page_decision == "clean")
+            raw_text, drop_repeats=(page_decision == "clean"), keep_lines=keep_lines
         )
         for line in flow_report.summary_lines():
             status(line)
@@ -618,7 +661,9 @@ def run_job(
         # Sur les segments : chaque paragraphe y a ses lignes recollées, la
         # forme exacte où un en-tête apparaît en pleine phrase. Avant les
         # tableaux et notes renvoyés en fin de document, jamais touchés.
-        segments, source_cleanup_report = _maybe_clean_source_segments(advanced, segments, status, notes)
+        segments, source_cleanup_report = _maybe_clean_source_segments(
+            advanced, segments, status, notes, protected=protected, skip_connectors=skip_connectors,
+        )
         # Tableaux et notes en DERNIER, jamais a leur place d'origine : c'est
         # ce qui evite qu'un tableau de trois pages ne vienne couper un
         # paragraphe en deux (demande explicite de l'utilisateur, 11/09/2026).
@@ -655,7 +700,9 @@ def run_job(
             status("Nettoyage des titres et des traits d'union…")
             report = postprocess.cleanup_file(segments, out_path, apply=True)
             status(report.summary())
-        md_cleanup_report = _maybe_advanced_cleanup(advanced, out_path, status, notes)
+        md_cleanup_report = _maybe_advanced_cleanup(
+            advanced, out_path, status, notes, protected=protected, skip_connectors=skip_connectors,
+        )
         paragraph_report = _maybe_split_paragraphs(job, out_path, status, notes)
         pdf_path = _maybe_export_pdf(job, out_path, status, notes)
         return Result(
@@ -753,7 +800,9 @@ def run_job(
         status(report.summary())
 
     # --- Nettoyage avancé (en-têtes répétés, mots coupés, titres) -----------
-    md_cleanup_report = _maybe_advanced_cleanup(advanced, out_path, status, notes) if not cancelled else None
+    md_cleanup_report = _maybe_advanced_cleanup(
+        advanced, out_path, status, notes, protected=protected, skip_connectors=skip_connectors,
+    ) if not cancelled else None
 
     # --- Aération des paragraphes (6 lignes max) ----------------------------
     paragraph_report = _maybe_split_paragraphs(job, out_path, status, notes) if not cancelled else None

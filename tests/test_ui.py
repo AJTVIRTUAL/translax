@@ -547,10 +547,10 @@ def main() -> int:
         # Python ordinaire plutôt qu'à une méthode liée d'un QObject se
         # révèle ambigu pour Qt quant au thread d'exécution ; passer par le
         # vrai slot lève l'ambiguïté ET teste le vrai chemin de production.
-        real_exec = QMessageBox.exec
-        real_clicked = QMessageBox.clickedButton
-        QMessageBox.exec = lambda self: None
-        QMessageBox.clickedButton = lambda self: self.buttons()[0]  # 1er bouton ajouté = "nettoyée"
+        # Fenêtre à cases (CleanupReviewDialog, 19/11/2026) : exec() simulé par
+        # un clic sur « Utiliser la version nettoyée », cases laissées cochées.
+        real_dialog_exec = main_window_mod.CleanupReviewDialog.exec
+        main_window_mod.CleanupReviewDialog.exec = lambda self: self._use_cleaned()
 
         window._start()
         check("le worker existe après _start()", window.worker is not None)
@@ -558,12 +558,50 @@ def main() -> int:
         check("thread terminé dans les temps", thread_ok)
         app.processEvents()
 
-        QMessageBox.exec = real_exec
-        QMessageBox.clickedButton = real_clicked
-
         paginated_output = out_dir / "paginated.md"
         check("fichier traduit sans le pied de page répété (décision « clean » appliquée)",
               paginated_output.exists() and "P a g e" not in paginated_output.read_text(encoding="utf-8"))
+
+        print("  6b. Une case par élément : décocher = garder dans le texte (19/11/2026)")
+        kept_source = workdir / "kept.txt"
+        kept_pages = []
+        for i in range(1, 7):
+            chapter = f"CHAPTER {'I' * ((i + 1) // 2)}\n" if i % 2 else ""
+            kept_pages.append(
+                f"{chapter}THE TEST BOOK\n\nReal paragraph number {i} of the kept-header test, "
+                f"long enough to count on its own.\n\n\n{i} | P a g e"
+            )
+        kept_source.write_text("\f".join(kept_pages), encoding="utf-8")
+        shown: list[str] = []
+
+        def uncheck_book_title_then_clean(dialog) -> None:
+            shown.extend(switch.text() for switch in dialog.group_checks.values())
+            for switch in dialog.group_checks.values():
+                if "THE TEST BOOK" in switch.text():
+                    switch.setChecked(False)
+            dialog._use_cleaned()
+
+        main_window_mod.CleanupReviewDialog.exec = uncheck_book_title_then_clean
+        window._set_source(kept_source)
+        window.output_dir = out_dir
+        window._update_output_preview()
+        window._start()
+        check("thread terminé dans les temps", wait_for_thread(window))
+        app.processEvents()
+        main_window_mod.CleanupReviewDialog.exec = real_dialog_exec
+
+        kept_output = out_dir / "kept.md"
+        kept_text = kept_output.read_text(encoding="utf-8") if kept_output.exists() else ""
+        check("une case par élément détecté (en-tête du livre + pied de page)",
+              any("THE TEST BOOK" in s for s in shown) and any("P a g e" in s for s in shown), f"({shown})")
+        check("les titres « CHAPTER I, II, III » ne sont même plus proposés au retrait",
+              not any("CHAPTER" in s for s in shown), f"({shown})")
+        check("élément décoché : gardé dans le texte (ni les lignes répétées ni le nettoyage avancé ne l'ont retiré)",
+              kept_text.count("THE TEST BOOK") == 6, f"({kept_text.count('THE TEST BOOK')} sur 6)")
+        check("élément resté coché : retiré", "P a g e" not in kept_text)
+        check("titres de chapitre conservés", "CHAPTER II" in kept_text)
+        check("journal : « Gardés à votre demande : « THE TEST BOOK » »",
+              "Gardés à votre demande : « THE TEST BOOK »" in window.log.toPlainText())
 
         print("\n7. Reboost : pouls de génération, sans jamais rien interrompre")
         window._set_source(source)

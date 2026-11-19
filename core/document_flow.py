@@ -129,7 +129,15 @@ def _normalize(line: str) -> str:
     return re.sub(r"\s+", " ", line).strip().lower()
 
 
-def drop_repeated_lines(text: str, report: FlowReport | None = None) -> str:
+def normalize_line(line: str) -> str:
+    """Forme comparée par `drop_repeated_lines` (publique : le pipeline s'en
+    sert pour protéger les lignes que l'utilisateur a choisi de garder)."""
+    return _normalize(line)
+
+
+def drop_repeated_lines(
+    text: str, report: FlowReport | None = None, keep_lines: frozenset[str] | set[str] = frozenset(),
+) -> str:
     """
     Retire les lignes qui reviennent à l'identique sur une large majorité des
     pages -- complément volontairement DIFFÉRENT de `page_cleanup.py`.
@@ -155,7 +163,9 @@ def drop_repeated_lines(text: str, report: FlowReport | None = None) -> str:
                 seen.setdefault(key, set()).add(index)
 
     threshold = max(MIN_REPEAT_PAGES, int(len(pages) * REPEAT_PAGE_SHARE))
-    banned = {key for key, hits in seen.items() if len(hits) >= threshold}
+    # Jamais une ligne que l'utilisateur a décochée dans la fenêtre de
+    # vérification des pages (`keep_lines`, formes de `normalize_line`).
+    banned = {key for key, hits in seen.items() if len(hits) >= threshold and key not in keep_lines}
     if not banned:
         return text
 
@@ -395,7 +405,9 @@ def _join(first: str, second: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def repair(text: str, drop_repeats: bool = True) -> tuple[str, FlowReport]:
+def repair(
+    text: str, drop_repeats: bool = True, keep_lines: frozenset[str] | set[str] = frozenset(),
+) -> tuple[str, FlowReport]:
     """
     Enchaîne les corrections dans le seul ordre qui fonctionne : retirer
     d'abord les répétitions, recoller ensuite.
@@ -413,5 +425,5 @@ def repair(text: str, drop_repeats: bool = True) -> tuple[str, FlowReport]:
     les retirer ici par une autre porte reviendrait à passer outre sa décision.
     """
     report = FlowReport()
-    cleaned = drop_repeated_lines(text, report) if drop_repeats else text
+    cleaned = drop_repeated_lines(text, report, keep_lines) if drop_repeats else text
     return stitch_pages(cleaned, report), report

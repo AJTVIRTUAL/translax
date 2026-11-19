@@ -141,7 +141,9 @@ class TranslationWorker(QObject):
         super().__init__()
         self._job = job
         self._stop_requested = threading.Event()
-        self._cleanup_decision: str | None = None
+        # "clean"/"original"/"cancel" ou `page_cleanup.CleanupChoice` (une case
+        # par groupe, 19/11/2026) -- transmis tel quel à pipeline.run_job.
+        self._cleanup_decision: object | None = None
         self._cleanup_answered = threading.Event()
         # Même pont threading.Event que le nettoyage des pages, pour la même
         # raison : Traduire X doit ATTENDRE une décision de l'utilisateur
@@ -162,7 +164,7 @@ class TranslationWorker(QObject):
     def stop_requested(self) -> bool:
         return self._stop_requested.is_set()
 
-    def set_cleanup_decision(self, decision: str) -> None:
+    def set_cleanup_decision(self, decision) -> None:
         """Appelée depuis le thread principal (voir MainWindow) une fois
         que l'utilisateur a répondu à la boîte de dialogue de nettoyage des
         pages -- débloque `_on_page_cleanup`, qui attend dans le thread de
@@ -170,7 +172,7 @@ class TranslationWorker(QObject):
         self._cleanup_decision = decision
         self._cleanup_answered.set()
 
-    def _on_page_cleanup(self, report) -> str:
+    def _on_page_cleanup(self, report):
         """
         Appelée par `pipeline.run_job`, dans CE thread de travail. Bloque
         jusqu'à ce que l'utilisateur ait répondu dans l'interface.

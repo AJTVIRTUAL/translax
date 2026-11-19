@@ -21,7 +21,8 @@ une entrée de plus dans `BLACKLIST`, rien d'autre. Chaque entrée donne :
                 l'est que seul sur sa ligne (« Page 17 » dans « voir page 17 »
                 est une vraie référence, jamais retirée) ;
   - `examples`: au moins un exemple réel -- `tests/test_page_markers.py`
-                vérifie automatiquement que chaque exemple est bien reconnu.
+                vérifie automatiquement que chaque exemple est bien reconnu ;
+  - `connector`: le mot entre les deux numéros (« of »), s'il y en a un.
 
 **Garde-fous** (un vrai « 3 of 10 patients » ne doit jamais disparaître) :
 les occurrences sont regroupées par marqueur ET par total (« … of 103 »), les
@@ -58,6 +59,11 @@ class PageMarker:
     regex: str
     inline: bool
     examples: tuple[str, ...]
+    # Mot entre les deux numéros (« of », « / », « sur »…) : ce qu'il reste
+    # quand `page_cleanup` retire les numéros d'un bord de page -- sert à
+    # respecter un groupe « Numéros de page « N of M » » que l'utilisateur a
+    # choisi de GARDER (voir pipeline.run_job). None sans total.
+    connector: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +75,7 @@ BLACKLIST: list[PageMarker] = [
         r"(?:page[ \t]+)?(?P<num>\d{1,4})[ \t]+of[ \t]+(?P<total>\d{1,4})",
         inline=True,
         examples=("17 of 103", "Page 17 of 103", "page 17 of 103"),
+        connector="of",
     ),
     PageMarker(
         "N / M",
@@ -78,30 +85,35 @@ BLACKLIST: list[PageMarker] = [
         r"(?:page[ \t]+)?(?P<num>\d{1,4})[ \t]+/[ \t]+(?P<total>\d{1,4})",
         inline=True,
         examples=("17 / 103", "Page 17 / 103"),
+        connector="/",
     ),
     PageMarker(
         "N sur M",
         r"(?:page[ \t]+)?(?P<num>\d{1,4})[ \t]+sur[ \t]+(?P<total>\d{1,4})",
         inline=True,
         examples=("17 sur 103", "Page 17 sur 103"),
+        connector="sur",
     ),
     PageMarker(
         "Seite N von M",
         r"seite[ \t]+(?P<num>\d{1,4})[ \t]+von[ \t]+(?P<total>\d{1,4})",
         inline=True,
         examples=("Seite 17 von 103",),
+        connector="von",
     ),
     PageMarker(
         "Página N de M",
         r"p[áa]g(?:ina|\.)[ \t]*(?P<num>\d{1,4})[ \t]+de[ \t]+(?P<total>\d{1,4})",
         inline=True,
         examples=("Página 17 de 103", "Pág. 17 de 103"),
+        connector="de",
     ),
     PageMarker(
         "Pagina N di M",
         r"pagina[ \t]+(?P<num>\d{1,4})[ \t]+di[ \t]+(?P<total>\d{1,4})",
         inline=True,
         examples=("Pagina 17 di 103",),
+        connector="di",
     ),
     PageMarker(
         "Page N",
@@ -117,6 +129,10 @@ BLACKLIST: list[PageMarker] = [
         examples=("- 17 -", "— 17 —"),
     ),
 ]
+
+
+# « of », « / », « sur »… -- voir `PageMarker.connector` et page_cleanup.
+PAGINATION_CONNECTORS = frozenset(m.connector for m in BLACKLIST if m.connector)
 
 
 def _compile(marker: PageMarker) -> re.Pattern:
@@ -188,11 +204,17 @@ def _label(marker: PageMarker, total: str | None) -> str:
     return re.sub(r"\bM\b(?!.*\bM\b)", total, marker.name)
 
 
-def strip_markers(text: str) -> tuple[str, MarkerReport]:
+def strip_markers(text: str, *, skip_connectors: frozenset[str] | set[str] = frozenset()) -> tuple[str, MarkerReport]:
     """Retire les marqueurs de la liste noire qui reviennent assez souvent
-    (voir le docstring du module). Retourne (texte, rapport)."""
+    (voir le docstring du module). Retourne (texte, rapport).
+
+    `skip_connectors` : marqueurs à laisser (« of » -> tous les « N of M »),
+    quand l'utilisateur a décoché leur groupe dans la fenêtre de vérification
+    des pages."""
     report = MarkerReport()
     for marker, pattern in _COMPILED:
+        if marker.connector is not None and marker.connector in skip_connectors:
+            continue
         groups: dict[str | None, list[tuple[re.Match, bool]]] = {}
         for match in pattern.finditer(text):
             standalone = _is_standalone(text, match.start(), match.end())

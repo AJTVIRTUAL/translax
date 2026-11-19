@@ -39,7 +39,18 @@ import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-EDGE_LINES = 3              # lignes examinées en haut ET en bas de chaque page
+from .page_markers import PAGINATION_CONNECTORS
+
+# Le mot « chapitre » dans les langues courantes (aussi utilisé par
+# core/md_cleanup.py). Une ligne « CHAPTER III » en haut de la page où
+# commence un chapitre, privée de son numéro, devenait « CHAPTER » -- répété
+# 8 fois, donc pris pour un en-tête et RETIRÉ, avec tous les titres de
+# chapitre du livre (vu par l'utilisateur le 19/11/2026). Jamais proposé.
+CHAPTER_WORDS = frozenset({
+    "CHAPITRE", "CHAPTER", "CAPÍTULO", "CAPITULO", "CAPITOLO", "KAPITEL", "HOOFDSTUK",
+})
+
+EDGE_LINES = 3             # lignes examinées en haut ET en bas de chaque page
 # Nombre minimum d'occurrences pour qu'une ligne-candidate soit retenue
 # comme en-tête/pied de page. Volontairement un seuil ABSOLU, pas un
 # pourcentage du livre entier : un en-tête de section courte (une préface
@@ -108,7 +119,14 @@ def _strip_number_token(text: str) -> str:
 
 # Ce qui reste d'une pagination « 17 of 103 », « 17 / 103 »… une fois ses deux
 # numéros retirés par `_strip_number_token` (voir core/page_markers.py).
-_PAGINATION_CONNECTORS = {"of", "/", "sur", "von", "de", "di"}
+_PAGINATION_CONNECTORS = PAGINATION_CONNECTORS
+
+
+def is_chapter_title_group(representative: str) -> bool:
+    """« CHAPTER » (de « CHAPTER III »), « Chapitre » (de « Chapitre 4 ») :
+    des titres de chapitre, pas un en-tête répété -- voir `CHAPTER_WORDS`."""
+    core = representative.strip(" .:—–-").upper()
+    return core in CHAPTER_WORDS
 
 
 @dataclass
@@ -128,6 +146,54 @@ class HeaderGroup:
     def count(self) -> int:
         return len(self.occurrences)
 
+    @property
+    def is_pagination(self) -> bool:
+        """« 17 of 103 » en bord de page (il n'en reste que « of »)."""
+        return not self.is_page_number and self.representative.strip().lower() in _PAGINATION_CONNECTORS
+
+    def label(self) -> str:
+        """Nom affiché dans la fenêtre de vérification (une case par groupe)."""
+        if self.is_page_number:
+            return "Numéros de page isolés"
+        if self.is_pagination:
+            return f"Numéros de page « N {self.representative.strip()} M »"
+        return f"« {self.representative or '(vide)'} »"
+
+
+@dataclass(frozen=True)
+class CleanupChoice:
+    """
+    Réponse à la fenêtre de vérification des pages (demande explicite de
+    l'utilisateur, 19/11/2026 : « me permettre de décocher un groupe si je
+    souhaite laisser des éléments répétés »).
+
+      - `decision` : "clean", "original" ou "cancel", comme avant ;
+      - `keep`     : indices (dans `PageCleanupReport.groups`) des groupes
+                     DÉCOCHÉS -- laissés dans le texte, et protégés aussi du
+                     nettoyage avancé et de la liste noire (pipeline.run_job) ;
+      - `advanced` : False si l'utilisateur a décoché la case du nettoyage
+                     avancé (en-têtes en pleine phrase, liste noire).
+
+    Un appelant qui répond encore par une simple chaîne ("clean"…) reste
+    compris tel quel (`CleanupChoice.of`) : ligne de commande, anciens tests.
+    """
+
+    decision: str = "clean"
+    keep: frozenset[int] = frozenset()
+    advanced: bool = True
+
+    @staticmethod
+    def of(value) -> "CleanupChoice":
+        if isinstance(value, CleanupChoice):
+            return value
+        if isinstance(value, dict):
+            return CleanupChoice(
+                decision=str(value.get("decision") or "cancel"),
+                keep=frozenset(int(i) for i in value.get("keep") or ()),
+                advanced=bool(value.get("advanced", True)),
+            )
+        return CleanupChoice(decision=str(value) if value else "cancel")
+
 
 @dataclass
 class PageCleanupReport:
@@ -143,21 +209,28 @@ class PageCleanupReport:
     def lines_removed(self) -> int:
         return sum(g.count for g in self.groups)
 
+    def ordered_groups(self) -> list[tuple[int, HeaderGroup]]:
+        """(indice dans `groups`, groupe), les plus fréquents d'abord -- l'ordre
+        d'affichage ; l'indice est celui que renvoie `CleanupChoice.keep`."""
+        return sorted(enumerate(self.groups), key=lambda pair: -pair[1].count)
+
+    @staticmethod
+    def group_line(group: HeaderGroup) -> str:
+        if group.is_page_number or group.is_pagination:
+            return f"{group.label()} — {group.count} occurrences retirées"
+        return f"{group.label()} — en-tête/pied de page répété, {group.count} occurrences retirées"
+
+    def without(self, keep: frozenset[int] | set[int]) -> "PageCleanupReport":
+        """Le même rapport, sans les groupes que l'utilisateur garde."""
+        return PageCleanupReport(
+            total_pages=self.total_pages,
+            groups=[g for i, g in enumerate(self.groups) if i not in keep],
+            extra_lines=list(self.extra_lines),
+        )
+
     def summary_lines(self, limit: int = 12) -> list[str]:
-        ordered = sorted(self.groups, key=lambda g: -g.count)
-        lines = []
-        for g in ordered[:limit]:
-            if g.is_page_number:
-                lines.append(f"Numéros de page isolés — {g.count} occurrences retirées")
-            elif g.representative.strip().lower() in _PAGINATION_CONNECTORS:
-                # « 17 of 103 » privé de ses deux numéros ne laisse que « of » :
-                # c'est une pagination, pas un en-tête nommé « of ».
-                lines.append(
-                    f"Numéros de page « N {g.representative.strip()} M » — {g.count} occurrences retirées"
-                )
-            else:
-                label = g.representative or "(vide)"
-                lines.append(f"« {label} » — en-tête/pied de page répété, {g.count} occurrences retirées")
+        ordered = [g for _, g in self.ordered_groups()]
+        lines = [self.group_line(g) for g in ordered[:limit]]
         if len(ordered) > limit:
             lines.append(f"… et {len(ordered) - limit} autre(s) motif(s) répété(s).")
         lines.extend(self.extra_lines)
@@ -254,7 +327,10 @@ def detect_running_headers(pages: list[str]) -> PageCleanupReport:
     if number_occurrences:
         merged.append(HeaderGroup(representative="", is_page_number=True, occurrences=number_occurrences))
 
-    report.groups = [g for g in merged if g.is_page_number or g.count >= MIN_OCCURRENCES]
+    report.groups = [
+        g for g in merged
+        if (g.is_page_number or g.count >= MIN_OCCURRENCES) and not is_chapter_title_group(g.representative)
+    ]
     return report
 
 

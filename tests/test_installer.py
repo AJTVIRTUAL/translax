@@ -12,9 +12,10 @@ Rien n'est simulé au niveau des opérations qui comptent réellement :
   vérifier sa cible réelle -- pas seulement son existence ;
 - une VRAIE clé de registre (sous une clé de TEST dédiée, jamais la vraie
   clé TRANSLAX -- voir `_patch_registry_key`) ;
-- un VRAI processus « TRANSLAX.exe » (une copie renommée de `notepad.exe`)
-  lancé puis fermé par `close_running_translax`, pour vérifier que ce
-  garde-fou fonctionne pour de vrai, pas seulement en apparence.
+- un VRAI processus (une copie renommée de `ping.exe`) lancé puis fermé par
+  `close_running_translax`, pour vérifier que ce garde-fou fonctionne pour de
+  vrai, pas seulement en apparence -- sous un nom PROPRE AU TEST, jamais
+  « TRANSLAX.exe » (voir PROTECTION ci-dessous).
 
 Toutes les fenêtres sont construites SANS `.show()` -- comme
 `tests/test_ui.py` : ce test ne fait jamais surgir de fenêtre sur le
@@ -38,6 +39,37 @@ from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from installer_app import operations  # noqa: E402
+
+# --- PROTECTION -------------------------------------------------------------
+# INCIDENT RÉEL (19/11/2026, deux fois) : ce test fermait la traduction EN
+# COURS de l'utilisateur. `operations.close_running_translax()` lance
+# `taskkill /IM TRANSLAX.exe` -- TOUS les TRANSLAX de la machine -- et il est
+# appelé ici directement (§5) ET par la vraie fenêtre d'installation (§8,
+# `installer_app/ui.py`). Pour tout ce fichier, dès l'import :
+#   1. le nom d'image vaut un nom propre à ce test (les fonctions de
+#      `operations` le relisent à chaque appel) ;
+#   2. toute commande qui viserait malgré tout le vrai nom est REFUSÉE avant
+#      d'être lancée (le garde-fou lève une erreur, rien n'est exécuté).
+REAL_EXE_NAME = operations.EXE_NAME
+TEST_EXE_NAME = f"TRANSLAX-test-{os.getpid()}.exe"
+operations.EXE_NAME = TEST_EXE_NAME
+_real_subprocess_run = operations.subprocess.run
+
+
+def _targets_real_translax(args) -> bool:
+    if isinstance(args, str):
+        args = args.split()
+    real = REAL_EXE_NAME.lower()
+    return any(str(a).strip().lower() == real or str(a).strip().lower().endswith(f"eq {real}") for a in args)
+
+
+def _guarded_run(args, *a, **kw):
+    if _targets_real_translax(args):
+        raise AssertionError(f"Refusé : ce test ne doit JAMAIS viser le vrai {REAL_EXE_NAME} ({args})")
+    return _real_subprocess_run(args, *a, **kw)
+
+
+operations.subprocess.run = _guarded_run
 
 failures: list[str] = []
 TIMEOUT_MS = 15_000
@@ -175,22 +207,39 @@ def main() -> int:
         # redirecteur vers l'appli Notepad empaquetée (Store) -- une copie
         # renommée se lance et se termine aussitôt sans laisser de
         # processus réel à observer, constaté en le testant réellement.
+        # Nom propre au test (voir PROTECTION en tête de fichier) : jamais le
+        # vrai « TRANSLAX.exe » de l'utilisateur.
         ping_exe = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "ping.exe"
-        fake_translax = workdir / operations.EXE_NAME
+        fake_translax = workdir / TEST_EXE_NAME
+        check("protection active : le nom visé n'est PAS le vrai TRANSLAX.exe",
+              operations.EXE_NAME == TEST_EXE_NAME != REAL_EXE_NAME)
+        # Le garde-fou lève AVANT d'appeler quoi que ce soit : rien n'est lancé ici.
+        refused = []
+        for forbidden in (["taskkill", "/IM", REAL_EXE_NAME], ["tasklist", "/FI", f"IMAGENAME eq {REAL_EXE_NAME}"]):
+            try:
+                operations.subprocess.run(forbidden)
+            except AssertionError:
+                refused.append(forbidden[0])
+        check("garde-fou : une commande visant le vrai TRANSLAX.exe est refusée avant d'être lancée",
+              refused == ["taskkill", "tasklist"], f"({refused})")
         if not ping_exe.exists():
             print("  SAUTÉ -- ping.exe introuvable sur cette machine (attendu sur un vrai Windows).")
         else:
             shutil.copy(ping_exe, fake_translax)
             import subprocess as sp
             proc = sp.Popen([str(fake_translax), "-t", "127.0.0.1"], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
-            time.sleep(1.0)
-            check("le faux TRANSLAX.exe est bien vu comme en cours d'exécution",
-                  operations.is_translax_running())
-            closed = operations.close_running_translax(timeout_s=5.0)
-            check("close_running_translax rapporte un succès réel", closed)
-            check("plus aucun TRANSLAX.exe ne tourne après fermeture",
-                  not operations.is_translax_running())
-            proc.wait(timeout=5)
+            try:
+                time.sleep(1.0)
+                check("le faux TRANSLAX (nom propre au test) est bien vu comme en cours d'exécution",
+                      operations.is_translax_running())
+                closed = operations.close_running_translax(timeout_s=5.0)
+                check("close_running_translax rapporte un succès réel", closed)
+                check("plus aucun faux TRANSLAX ne tourne après fermeture",
+                      not operations.is_translax_running())
+                proc.wait(timeout=5)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()  # ce processus-là seulement (par son PID), jamais par nom
 
         print("\n6. Installation complète, de bout en bout, chemins redirigés vers un dossier de test")
         install_dir = workdir / "install"

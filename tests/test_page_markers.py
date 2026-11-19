@@ -177,6 +177,44 @@ def main() -> int:
             advanced_cleanup=False,
         ))
         check("nettoyage avancé décoché : laissé tel quel", any("of 103" in t for t in received))
+
+        print("\n7. Fenêtre à cases (19/11/2026) : un groupe décoché est gardé pour de bon")
+        paged = workdir / "paged.txt"
+        paged.write_text("\f".join(
+            f"RUNNING TITLE\n\n{FILLER} Body of page {n}.\n\n{n} of 6" for n in range(1, 7)
+        ), encoding="utf-8")
+        seen: dict = {}
+
+        def keep_pagination(report):
+            seen["labels"] = [g.label() for g in report.groups]
+            keep = {i for i, g in enumerate(report.groups) if g.is_pagination}
+            return page_cleanup.CleanupChoice(decision="clean", keep=frozenset(keep))
+
+        kept = pipeline.run_job(
+            pipeline.Job(input_path=paged, output_path=workdir / "paged.md", extract_only=True,
+                         strategy="blocks", split_paragraphs=False),
+            on_page_cleanup=keep_pagination,
+        )
+        kept_text = kept.output_path.read_text(encoding="utf-8")
+        check("groupes proposés : pagination « N of M » et titre courant",
+              "Numéros de page « N of M »" in seen.get("labels", []) and "« RUNNING TITLE »" in seen.get("labels", []),
+              f"({seen})")
+        check("« N of M » décoché : les 6 numéros restent (la liste noire ne passe pas outre)",
+              len(re.findall(r"\b\d of 6\b", kept_text)) == 6, f"({kept_text!r})")
+        check("le groupe resté coché est retiré", "RUNNING TITLE" not in kept_text)
+
+        no_advanced = pipeline.run_job(
+            pipeline.Job(input_path=paged, output_path=workdir / "paged_sans_avance.md", extract_only=True,
+                         strategy="blocks", split_paragraphs=False),
+            on_page_cleanup=lambda report: page_cleanup.CleanupChoice(decision="clean", advanced=False),
+        )
+        check("case « Nettoyage avancé » décochée : ni avant ni après pour ce document",
+              no_advanced.source_cleanup_report is None and no_advanced.md_cleanup_report is None)
+        check("ancienne réponse en simple texte (« clean ») toujours comprise",
+              page_cleanup.CleanupChoice.of("clean") == page_cleanup.CleanupChoice(decision="clean")
+              and page_cleanup.CleanupChoice.of(None).decision == "cancel"
+              and page_cleanup.CleanupChoice.of({"decision": "clean", "keep": [2], "advanced": False})
+              == page_cleanup.CleanupChoice(decision="clean", keep=frozenset({2}), advanced=False))
     finally:
         for name, engine in originals.items():
             setattr(translate, name, engine)
