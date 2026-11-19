@@ -3,8 +3,9 @@ Orchestration complète : fichier d'entrée -> fichier .md traduit.
 
 C'est le seul module que l'interface a besoin d'appeler. Il enchaîne
 extraction -> nettoyage des pages -> segmentation -> traduction ->
-nettoyage typographique -> renommage selon le titre traduit, gère le
-nommage automatique de la sortie et la reprise après interruption.
+nettoyage typographique -> nettoyage avancé (core/md_cleanup.py) ->
+aération des paragraphes -> renommage selon le titre traduit -> PDF, gère
+le nommage automatique de la sortie et la reprise après interruption.
 
 Règle de nommage : le nom dérivé du fichier source avec l'extension .md
 (IlluVol1.txt -> IlluVol1.md, `default_output_path`) sert de point de
@@ -38,6 +39,7 @@ from . import (
     document_flow,
     extract,
     layout as layout_mod,
+    md_cleanup,
     page_cleanup,
     paragraphs as paragraphs_mod,
     pdf_export,
@@ -88,6 +90,16 @@ class Job:
     # découpage pour le .md et le PDF (voir core/paragraphs.py).
     split_paragraphs: bool = True
     max_paragraph_lines: int = paragraphs_mod.DEFAULT_MAX_LINES
+    # Nettoyage avancé, activé par défaut (demandes explicites de
+    # l'utilisateur, 19/11/2026 : « une fonctionnalité par défaut aussi quand
+    # on traduit un livre », puis « nettoyer le texte source avant la
+    # traduction », sans pause de plus) : le même traitement que l'outil
+    # « Nettoyage avancé d'un .md » (voir core/md_cleanup.py) -- en-têtes/
+    # pieds de page répétés retirés même en pleine phrase, mots coupés
+    # recollés, titres dégagés du texte. Appliqué deux fois : au texte
+    # SOURCE avant traduction (`_maybe_clean_source_segments`), puis au .md
+    # terminé en filet de sécurité (`_maybe_advanced_cleanup`).
+    advanced_cleanup: bool = True
 
     def resolved_output(self) -> Path:
         return Path(self.output_path) if self.output_path else default_output_path(self.input_path)
@@ -102,6 +114,8 @@ class Result:
     cancelled: bool = False
     cleanup_report: postprocess.CleanupReport | None = None
     paragraph_report: paragraphs_mod.SplitReport | None = None   # aération des paragraphes (voir core/paragraphs.py)
+    md_cleanup_report: md_cleanup.MdCleanupReport | None = None  # nettoyage avancé du .md final (voir core/md_cleanup.py)
+    source_cleanup_report: md_cleanup.MdCleanupReport | None = None  # nettoyage avancé du texte source, avant traduction
     page_cleanup_report: page_cleanup.PageCleanupReport | None = None
     layout_report: "layout_mod.LayoutReport | None" = None   # analyse de mise en page (PDF seulement)
     vision_ocr_report: vision_ocr.VisionOcrReport | None = None
@@ -137,6 +151,75 @@ def _maybe_export_pdf(job: "Job", md_path: Path, status, notes: list[str]) -> Pa
         return None
     status("Export PDF terminé.")
     return pdf_path
+
+
+def _maybe_clean_source_segments(
+    enabled: bool, segments: list[dict], status, notes: list[str]
+) -> tuple[list[dict], md_cleanup.MdCleanupReport | None]:
+    """
+    Nettoyage avancé du texte SOURCE, juste avant la traduction (demande
+    explicite de l'utilisateur, 19/11/2026 -- surtout pour Traduire X, où
+    l'OCR laisse les en-têtes de page au milieu des phrases). Voir
+    `md_cleanup.clean_segments` : le moteur ne reçoit plus « apportée 10 LE
+    COTÉ CACHÉ DES CHOSES au corps », et un mot coupé par la page est
+    recollé tant qu'il peut encore l'être.
+
+    Environ 2 s pour un livre de 70 000 mots, et autant de mots en moins à
+    traduire (1,6 % sur le livre de l'utilisateur) : le travail total ne
+    s'allonge pas. Aucune pause : ce qui sera retiré est montré dans la
+    fenêtre de vérification des pages QUAND elle s'affiche déjà, sinon
+    seulement écrit dans le journal. Un échec ne bloque jamais la
+    traduction : les segments partent alors tels quels.
+    """
+    if not enabled:
+        return segments, None
+    status("Nettoyage avancé du texte source (en-têtes en pleine phrase, mots coupés, titres)…")
+    try:
+        cleaned, report = md_cleanup.clean_segments(segments)
+    except Exception as exc:  # noqa: BLE001 - jamais bloquer la traduction pour la mise en forme
+        notes.append(f"Nettoyage avancé du texte source échoué ({exc}) -- texte traduit tel quel.")
+        return segments, None
+    for line in report.summary_lines():
+        status(f"Texte source — {line}")
+    return cleaned, report
+
+
+def _maybe_advanced_cleanup(enabled: bool, md_path: Path, status, notes: list[str]) -> md_cleanup.MdCleanupReport | None:
+    """
+    Nettoyage avancé du .md terminé (voir core/md_cleanup.py) : exactement
+    le traitement de l'outil « Nettoyage avancé d'un .md », mais SUR PLACE.
+    Depuis que le texte source est nettoyé avant la traduction
+    (`_maybe_clean_source_segments`), c'est surtout un filet de sécurité :
+    il ne trouve en général plus rien.
+
+    Même place dans la chaîne que l'aération, et pour la même raison : APRÈS
+    le nettoyage typographique (qui repose sur un alignement 1:1 entre blocs
+    du .md et segments source, que le recollage de paragraphes et les titres
+    dégagés casseraient) ; AVANT l'aération, qui redécoupe ainsi les
+    paragraphes recollés ; AVANT l'export PDF, qui hérite du résultat.
+
+    Même sauvegarde que les autres traitements de fin
+    (`postprocess.backup_path`, écrite seulement si elle n'existe pas déjà) :
+    l'outil « Annuler le nettoyage » restaure le fichier tel qu'il était
+    avant TOUT le post-traitement. Un échec ne fait jamais échouer le job.
+    """
+    if not enabled:
+        return None
+    status("Nettoyage avancé — vérification finale (en-têtes/pieds de page répétés, mots coupés, titres)…")
+    try:
+        content = md_path.read_text(encoding="utf-8")
+        cleaned, report = md_cleanup.clean_markdown(content, extract_headings=True, aerate=False)
+        if cleaned != content.replace("\r\n", "\n"):
+            bpath = postprocess.backup_path(md_path)
+            if not bpath.exists():
+                bpath.write_text(content, encoding="utf-8")
+            md_path.write_text(cleaned, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 - jamais faire échouer le job pour la mise en forme
+        notes.append(f"Nettoyage avancé échoué ({exc}) -- le fichier .md reste tel quel.")
+        return None
+    for line in report.summary_lines():
+        status(line)
+    return report
 
 
 def _maybe_split_paragraphs(job: "Job", md_path: Path, status, notes: list[str]) -> paragraphs_mod.SplitReport | None:
@@ -357,6 +440,11 @@ def run_job(
     previous = None if job.resume == "restart" else state_mod.can_resume(out_path, input_path)
     cached_segments = state_mod.segments_path(out_path)
     page_report = None
+    # Nettoyage avancé (voir `Job.advanced_cleanup`) : coupé pour CE job si
+    # l'utilisateur choisit « Utiliser l'original » dans la fenêtre de
+    # vérification des pages, qui liste aussi ce que lui retirerait.
+    advanced = job.advanced_cleanup
+    source_cleanup_report = None
 
     vision_report = None
     layout_report = None
@@ -468,6 +556,14 @@ def run_job(
                 f"{page_report.lines_removed} ligne(s) d'en-tête/pied de page ou de "
                 f"numérotation détectées sur {page_report.total_pages} pages."
             )
+            # Fenêtre déjà affichée : on y ajoute les en-têtes en pleine
+            # phrase que le nettoyage avancé retirera -- jamais une pause de
+            # plus (choix explicite de l'utilisateur, 19/11/2026).
+            if advanced:
+                try:
+                    page_report.extra_lines = md_cleanup.preview_lines(cleaned_text)
+                except Exception:  # noqa: BLE001 - un aperçu raté ne bloque rien
+                    page_report.extra_lines = []
             page_decision = on_page_cleanup(page_report) if on_page_cleanup is not None else "clean"
             if page_decision == "cancel":
                 return Result(
@@ -479,6 +575,8 @@ def run_job(
                     notes=["Annulé après revue du nettoyage des pages — aucun segment n'a été traduit."],
                 )
         raw_text = cleaned_text if page_decision == "clean" else raw_text
+        if page_decision == "original":
+            advanced = False  # garder les en-têtes : ni avant, ni après la traduction
 
         # --- Remise en ordre du fil : doublons, paragraphes coupes -------
         # S'applique aux DEUX boutons : le texte issu de l'OCR (« Traduire X »)
@@ -500,6 +598,11 @@ def run_job(
                else "texte continu, paragraphes reconstruits par phrases")
         )
         segments = segment_mod.segment_text(raw_text, strategy=strategy, target_words=job.target_words)
+        # --- Nettoyage avancé du texte SOURCE, avant traduction ------------
+        # Sur les segments : chaque paragraphe y a ses lignes recollées, la
+        # forme exacte où un en-tête apparaît en pleine phrase. Avant les
+        # tableaux et notes renvoyés en fin de document, jamais touchés.
+        segments, source_cleanup_report = _maybe_clean_source_segments(advanced, segments, status, notes)
         # Tableaux et notes en DERNIER, jamais a leur place d'origine : c'est
         # ce qui evite qu'un tableau de trois pages ne vienne couper un
         # paragraphe en deux (demande explicite de l'utilisateur, 11/09/2026).
@@ -536,6 +639,7 @@ def run_job(
             status("Nettoyage des titres et des traits d'union…")
             report = postprocess.cleanup_file(segments, out_path, apply=True)
             status(report.summary())
+        md_cleanup_report = _maybe_advanced_cleanup(advanced, out_path, status, notes)
         paragraph_report = _maybe_split_paragraphs(job, out_path, status, notes)
         pdf_path = _maybe_export_pdf(job, out_path, status, notes)
         return Result(
@@ -546,6 +650,8 @@ def run_job(
             cancelled=False,
             cleanup_report=report,
             paragraph_report=paragraph_report,
+            md_cleanup_report=md_cleanup_report,
+            source_cleanup_report=source_cleanup_report,
             page_cleanup_report=page_report,
             layout_report=layout_report,
             vision_ocr_report=vision_report,
@@ -630,6 +736,9 @@ def run_job(
         report = postprocess.cleanup_file(segments, out_path, apply=True)
         status(report.summary())
 
+    # --- Nettoyage avancé (en-têtes répétés, mots coupés, titres) -----------
+    md_cleanup_report = _maybe_advanced_cleanup(advanced, out_path, status, notes) if not cancelled else None
+
     # --- Aération des paragraphes (6 lignes max) ----------------------------
     paragraph_report = _maybe_split_paragraphs(job, out_path, status, notes) if not cancelled else None
 
@@ -662,6 +771,8 @@ def run_job(
         cancelled=cancelled,
         cleanup_report=report,
         paragraph_report=paragraph_report,
+        md_cleanup_report=md_cleanup_report,
+        source_cleanup_report=source_cleanup_report,
         page_cleanup_report=page_report,
         layout_report=layout_report,
         vision_ocr_report=vision_report,

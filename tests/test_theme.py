@@ -101,7 +101,8 @@ def main() -> int:
     check("les encadrés d'information sont alignés sur cette colonne", note_xs == set(xs.values()),
           f"({note_xs} vs {set(xs.values())})")
     check("les options sont des interrupteurs animés (même API que les cases à cocher)",
-          all(isinstance(c, ToggleSwitch) for c in (window.cleanup_check, window.split_check, window.extract_only_check)))
+          all(isinstance(c, ToggleSwitch) for c in (
+              window.cleanup_check, window.advanced_cleanup_check, window.split_check, window.extract_only_check)))
     check("la page Traduire porte un vrai titre d'écran", window.page_title.text() == "Traduire")
     window.extract_only_check.setChecked(True)
     check("… qui devient « Extraire » en mode extraction seule", window.page_title.text() == "Extraire")

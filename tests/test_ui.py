@@ -19,6 +19,7 @@ surgir de fenêtre sur le bureau.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import tempfile
@@ -344,9 +345,13 @@ def main() -> int:
               f"({window.progress_bar.value()}/{SEGMENT_COUNT})")
         check("bandeau annonce la fin", "Terminé" in window.stats_label.text(),
               f"({window.stats_label.text()})")
+        # Lignes de progression seulement (« [3/25] 12 mots → … ») : d'autres
+        # lignes du journal peuvent contenir « mots » (étape « Nettoyage
+        # avancé (…, mots coupés, titres)… », 19/11/2026).
+        progress_lines = re.findall(r"^\[\d+/\d+\] \d+ mots", window.log.toPlainText(), re.MULTILINE)
         check("journal alimenté en direct",
-              window.log.toPlainText().count("mots") == SEGMENT_COUNT,
-              f"({window.log.toPlainText().count('mots')} lignes)")
+              len(progress_lines) == SEGMENT_COUNT,
+              f"({len(progress_lines)} lignes)")
         check("commandes déverrouillées", window.translate_button.isEnabled())
         check("bouton Stop désactivé", not window.stop_button.isEnabled())
         check("bouton Ouvrir activé", window.open_file_button.isEnabled())
@@ -1098,6 +1103,8 @@ def main() -> int:
 
             print("  11b. Outil « Aérer un document déjà traduit » (10/11/2026)")
             check("case « Aérer les paragraphes » cochée par défaut", hub_window.split_check.isChecked())
+            check("case « Nettoyage avancé » cochée par défaut (19/11/2026)",
+                  hub_window.advanced_cleanup_check.isChecked())
             long_par = " ".join(
                 f"Ceci est la phrase numéro {i}, assez longue pour remplir une bonne partie de la ligne."
                 for i in range(1, 30)

@@ -40,6 +40,11 @@ du haut et du bas de chaque page, avant l'assemblage.
 Aucun mot d'auteur n'est réécrit : seuls disparaissent les en-têtes, leurs
 numéros et les numéros de cahier ; seuls des sauts de paragraphe et des
 marques de titre (#, ##) sont ajoutés.
+
+Trois usages (voir core/pipeline.py) : l'outil « Nettoyage avancé d'un .md »
+(`clean_file`) ; par défaut sur le texte SOURCE juste avant la traduction
+(`clean_segments`, surtout utile après l'OCR de Traduire X) ; puis une
+dernière fois sur le .md terminé (`clean_markdown`), en filet de sécurité.
 """
 from __future__ import annotations
 
@@ -63,8 +68,21 @@ _ROMAN_RE = re.compile(r"^[IVXLC]+$")
 _NUM_BEFORE_RE = re.compile(rf"(?<!\d)(\d{{1,3}})[ \t]+({_UPWORD}(?:[ \t]+{_UPWORD})*)")
 _NUM_AFTER_RE = re.compile(rf"(?<![\w'’])({_UPWORD}(?:[ \t]+{_UPWORD})*)[ \t]+(\d{{1,3}})(?![\d\w])")
 
+# Mêmes formes, avec un point ou une virgule parasite entre deux mots (coquilles
+# d'OCR seulement, voir `_find_variants`).
+_LOOSE_RUN = rf"{_UPWORD}[.,]?(?:[ \t]+{_UPWORD}[.,]?)*"
+_LOOSE_BEFORE_RE = re.compile(rf"(?<!\d)(\d{{1,3}})[ \t]+({_LOOSE_RUN})")
+_LOOSE_AFTER_RE = re.compile(rf"(?<![\w'’])({_LOOSE_RUN})[ \t]+(\d{{1,3}})(?![\d\w])")
+
+# Le mot « chapitre » dans les langues sources courantes : le nettoyage passe
+# aussi sur le texte SOURCE avant traduction (19/11/2026), souvent anglais.
+_CHAPTER_WORDS = frozenset({
+    "CHAPITRE", "CHAPTER", "CAPÍTULO", "CAPITULO", "CAPITOLO", "KAPITEL", "HOOFDSTUK",
+})
+_CHAPTER_WORD = "(?:" + "|".join(sorted(_CHAPTER_WORDS, key=len, reverse=True)) + ")"
+
 # Une entrée de table des matières : « CHAPITRE XIV. — PAR NOS HABITUDES 7 ».
-_TOC_BEFORE_RE = re.compile(r"(?:—|–|CHAPITRE\s+[IVXLC]+\.?)\s*$")
+_TOC_BEFORE_RE = re.compile(rf"(?:—|–|{_CHAPTER_WORD}\s+[IVXLC]+\.?)\s*$")
 
 # Seuils de détection (voir `detect_running_headers`). 3 numéros différents
 # au minimum : à 2, une adresse d'éditeur citée deux fois en fin de livre
@@ -170,7 +188,7 @@ def detect_running_headers(text: str) -> list[RunningHeader]:
         words = phrase.split()
         if _letters(phrase) < _MIN_LETTERS or all(_ROMAN_RE.match(w) for w in words):
             continue
-        if "CHAPITRE" in words:
+        if _CHAPTER_WORDS.intersection(words):
             # « CHAPITRE XV » suivi d'un numéro de cahier, ou en-tête collé au
             # début d'un chapitre (« 60 LE COTÉ… CHOSES CHAPITRE XVI ») : le mot
             # appartient au titre du chapitre, jamais à l'en-tête.
@@ -215,13 +233,17 @@ def _find_variants(text: str, headers: list[RunningHeader]) -> None:
             for candidate in (" ".join(words[:n]), " ".join(words[-n:])):
                 if candidate in known or candidate in header.variants:
                     continue
+                if candidate.endswith((".", ",")):
+                    continue  # ponctuation finale : peut-être celle de la phrase, jamais retirée
                 if SequenceMatcher(None, candidate, header.text).ratio() >= _VARIANT_SIMILARITY:
                     header.variants.add(candidate)
 
-    for match in _NUM_BEFORE_RE.finditer(text):
+    # Ponctuation parasite tolérée ENTRE les mots d'une coquille : « 210 LE
+    # COTÉ CACHÉ DES. GHOSES » (vu sur le vrai livre de l'utilisateur).
+    for match in _LOOSE_BEFORE_RE.finditer(text):
         if not _is_toc_context(text, match.start()):
             consider(match.group(2).split())
-    for match in _NUM_AFTER_RE.finditer(text):
+    for match in _LOOSE_AFTER_RE.finditer(text):
         if not _is_toc_context(text, match.start()):
             consider(match.group(1).split())
 
@@ -270,6 +292,8 @@ _SUFFIX_FRAGMENTS = frozenset({
     "ment", "ments", "tion", "tions", "sion", "sions", "ité", "ités", "able", "ables",
     "ible", "ibles", "ique", "iques", "ance", "ances", "ence", "ences", "euse", "euses",
     "ness", "ing", "ings", "ly", "tive", "tives", "lement",
+    # Texte source avant traduction (19/11/2026) : espagnol, italien, allemand.
+    "mente", "ción", "ciones", "zione", "zioni", "ung", "ungen", "keit", "heit",
 })
 
 
@@ -301,18 +325,23 @@ def remove_running_headers(text: str, headers: list[RunningHeader], report: MdCl
     vocabulary = _vocabulary(text, [form for _, form in forms])
     for header, form in sorted(forms, key=lambda pair: -len(pair[1])):
         body = _header_pattern(form)
+        # Le numéro de cahier peut lui aussi être collé au mot coupé : « suivre
+        # jus14 210 LE COTÉ… qu'à » -> « suivre jusqu'à » (vrai livre).
         before = re.compile(
-            rf"(?:(?<![\w.,])(?P<sig>\d{{1,2}})[ \t]+)?(?<!\d)(?P<num>\d{{1,3}})[ \t]+{body}(?![\w'’])(?P<tail>[ \t]*)"
+            rf"(?:(?<![\d.,])(?P<sig>\d{{1,2}})[ \t]+)?(?<!\d)(?P<num>\d{{1,3}})[ \t]+{body}(?![\w'’])(?P<tail>[ \t]*)"
         )
         after = re.compile(rf"(?<![\w'’]){body}[ \t]+(?P<num>\d{{1,3}})(?![\d\w])(?P<tail>[ \t]*)")
-        alone = re.compile(rf"(?<![\w'’]){body}[ \t]+(?=CHAPITRE\b)")
+        alone = re.compile(rf"(?<![\w'’]){body}[ \t]+(?={_CHAPTER_WORD}\b)")
 
         def strip_before(match: re.Match) -> str:
-            start = match.start("num")
+            # Début du premier numéro : celui du cahier s'il y en a un.
+            start = match.start()
             if _is_toc_context(text_ref[0], match.start()):
                 return match.group(0)
             header.removed += 1
             report.occurrences_removed += 1
+            if match.group("sig"):
+                report.signature_marks_removed += 1
             glued = start > 0 and text_ref[0][start - 1].isalpha()
             following = text_ref[0][match.end():match.end() + 40]
             if glued and following[:1].islower():
@@ -322,8 +351,6 @@ def remove_running_headers(text: str, headers: list[RunningHeader], report: MdCl
                 if _should_join(left, _first_word(following), vocabulary):
                     report.words_rejoined += 1
                     return ""
-            if match.group("sig") and not glued:
-                report.signature_marks_removed += 1
             return " "
 
         def strip_after(match: re.Match) -> str:
@@ -357,11 +384,16 @@ def remove_running_headers(text: str, headers: list[RunningHeader], report: MdCl
 # ---------------------------------------------------------------------------
 
 # Début de phrase : majuscule suivie d'une minuscule (« Les », « L'étudiant »).
-_SENTENCE_START = rf"[{_UP}](?:['’][{_LOW}]|[{_LOW}])"
+# Aussi un mot d'une lettre suivi d'un mot en minuscules : « A saying… »,
+# « I have… » (texte source anglais, 19/11/2026), « À la fin… ».
+_SENTENCE_START = rf"(?:[{_UP}](?:['’][{_LOW}]|[{_LOW}])|[AIÀ][ \t]+[{_LOW}])"
 # Numéro romain, coquilles d'OCR comprises (« XVIH » pour « XVIII ») : gardé
 # tel quel dans le titre, jamais « corrigé ».
+# Le mot d'origine est gardé (« CHAPTER 3 » reste anglais : traduit ensuite).
+# Numéro en chiffres arabes accepté aussi (« CHAPTER 3 »), courant en anglais.
 _CHAPTER_RE = re.compile(
-    rf"(?<![\w—–.])CHAPITRE[ \t]+(?P<roman>[IVXLC][IVXLCH1l]*)\b\.?[ \t]+(?:\d{{1,2}}[ \t]+)?"
+    rf"(?<![\w—–.])(?P<word>{_CHAPTER_WORD})[ \t]+(?P<roman>[IVXLC][IVXLCH1l]*|\d{{1,3}})\b\.?[ \t]+"
+    rf"(?:\d{{1,2}}[ \t]+)?"
     rf"(?P<title>{_UPWORD}(?:[ \t]+{_UPWORD})*)(?=[ \t]+{_SENTENCE_START}|[ \t]*$)"
 )
 _SECTION_RE = re.compile(
@@ -370,7 +402,8 @@ _SECTION_RE = re.compile(
 
 
 def _is_toc_block(block: str) -> bool:
-    return block.count("CHAPITRE") >= 2 or " — " in block and block.count("—") >= 3
+    chapters = len(re.findall(rf"\b{_CHAPTER_WORD}\b", block))
+    return chapters >= 2 or " — " in block and block.count("—") >= 3
 
 
 def _looks_like_title(title: str) -> bool:
@@ -433,7 +466,7 @@ def extract_titles(text: str, headers: list[RunningHeader], report: MdCleanupRep
                 if title == phrase or title.startswith(phrase + " "):
                     chapter, section = phrase, title[len(phrase):].strip()
                     break
-            lines = [f"# CHAPITRE {match.group('roman')} — {chapter}"]
+            lines = [f"# {match.group('word')} {match.group('roman')} — {chapter}"]
             report.chapters_extracted += 1
             if section and _looks_like_title(section):
                 lines.append(f"## {section}")
@@ -447,7 +480,7 @@ def extract_titles(text: str, headers: list[RunningHeader], report: MdCleanupRep
             if any(s <= match.start() < e for s, e in taken):
                 continue
             title = match.group("title")
-            if title.startswith("CHAPITRE") or not _looks_like_title(title):
+            if title.split()[0] in _CHAPTER_WORDS or not _looks_like_title(title):
                 continue
             if not _at_sentence_start(work, match.start()):
                 continue
@@ -495,6 +528,95 @@ def clean_markdown(
     if not text.endswith("\n"):
         text += "\n"
     return text, report
+
+
+# Bloc à ne jamais toucher (bloc « restreint », voir core/segment.py),
+# remplacé le temps du nettoyage par ce repère sans lettre ni mot.
+_KEEP_RE = re.compile(r"⟦(\d+)⟧")
+_SEGMENT_PREFIX = {"title": "# ", "heading": "## "}
+# Repères privés : une puce, et un paragraphe qui commence par « # », « - »
+# (tiret de dialogue) ou « ⟦ » -- jamais pris pour un titre ou une puce.
+_BULLET_MARK = "⟦-⟧ "
+_PARAGRAPH_MARK = "⟦¶⟧"
+_HEADING_RE = re.compile(r"(#{1,6})[ \t]+(.+)", re.DOTALL)
+
+
+def clean_segments(segments: list[dict], *, extract_headings: bool = True) -> tuple[list[dict], MdCleanupReport]:
+    """
+    Le même nettoyage, appliqué au texte SOURCE juste avant la traduction
+    (demande explicite de l'utilisateur, 19/11/2026, surtout pour Traduire X :
+    OCR puis traduction). Le moteur reçoit ainsi des phrases propres : un
+    en-tête noyé dans une phrase n'est plus traduit avec elle, et un mot coupé
+    par la page (« spi28 THE HIDDEN SIDE OF THINGS ced ») est recollé AVANT
+    d'être traduit -- après, ses deux morceaux n'existent plus nulle part.
+
+    Les segments sont le bon niveau : chaque paragraphe y a déjà ses lignes
+    recollées, exactement la forme où l'en-tête apparaît en pleine phrase.
+    Aller-retour par le Markdown (« # » titre, « ## » intertitre, « - »
+    puce) ; un bloc restreint (jamais traduit) est mis de côté puis remis tel
+    quel. Un titre de chapitre dégagé devient un segment « title », une
+    section un « heading » : traduits comme des titres, à part.
+    """
+    kept: list[dict] = []
+    blocks: list[str] = []
+    for segment in segments:
+        kind = segment.get("type", "paragraph")
+        text = segment.get("text", "")
+        if kind == "paragraph":
+            blocks.append(_PARAGRAPH_MARK + text if text.startswith(("#", "-", "⟦")) else text)
+        elif kind == "bullet":
+            blocks.append(_BULLET_MARK + text)
+        elif kind in _SEGMENT_PREFIX:
+            blocks.append(_SEGMENT_PREFIX[kind] + text)
+        else:
+            blocks.append(f"⟦{len(kept)}⟧")
+            kept.append(segment)
+
+    cleaned, report = clean_markdown("\n\n".join(blocks) + "\n", extract_headings=extract_headings, aerate=False)
+
+    out: list[dict] = []
+
+    def emit(piece: str) -> None:
+        piece = piece.strip()
+        if not piece or re.fullmatch(r"#{1,6}", piece):
+            return  # « ## 10 LE COTÉ… » réduit à « ## » : un en-tête seul, retiré
+        heading = _HEADING_RE.fullmatch(piece)
+        if piece.startswith(_BULLET_MARK.strip()):
+            out.append({"type": "bullet", "text": re.sub(r"\s+", " ", piece[len(_BULLET_MARK.strip()):]).strip()})
+        elif heading:
+            kind = "title" if len(heading.group(1)) == 1 else "heading"
+            out.append({"type": kind, "text": re.sub(r"\s+", " ", heading.group(2)).strip()})
+        else:
+            text = re.sub(r"\s+", " ", piece.replace(_PARAGRAPH_MARK, "")).strip()
+            if text:
+                out.append({"type": "paragraph", "text": text})
+
+    for block in re.split(r"\n\s*\n", cleaned):
+        # Un repère recollé à du texte par erreur est quand même ressorti à
+        # sa place : un bloc restreint ne disparaît ni ne se traduit jamais.
+        cursor = 0
+        for match in _KEEP_RE.finditer(block):
+            emit(block[cursor:match.start()])
+            out.append(kept[int(match.group(1))])
+            cursor = match.end()
+        emit(block[cursor:])
+    return out, report
+
+
+def preview_lines(text: str) -> list[str]:
+    """
+    En-têtes que le nettoyage avancé retirera, lus dans le texte brut (lignes
+    d'un paragraphe recollées comme le fera la segmentation) -- pour les
+    montrer dans la fenêtre de vérification déjà affichée, sans pause de
+    plus (voir pipeline.run_job). Vide s'il n'y en a aucun.
+    """
+    paragraphs = re.split(r"\n\s*\n", text.replace("\f", "\n\n"))
+    flat = "\n\n".join(" ".join(p.split()) for p in paragraphs if p.strip())
+    headers = detect_running_headers(flat)
+    if not headers:
+        return []
+    found = ", ".join(f"« {h.text} » ({len(h.pages)} pages)" for h in headers)
+    return [f"En plein texte (nettoyage avancé) : {found} -- retirés avec leurs numéros, mots coupés recollés."]
 
 
 def cleaned_path(source: Path) -> Path:

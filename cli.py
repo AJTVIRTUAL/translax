@@ -90,6 +90,13 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None, help="ne traiter que les N premiers segments (test)")
     parser.add_argument("--no-cleanup", action="store_true", help="ne pas passer le nettoyage final")
     parser.add_argument(
+        "--no-advanced-cleanup",
+        action="store_true",
+        help="ne pas passer le nettoyage avancé (par défaut : sur le texte source AVANT la traduction, puis "
+        "vérifié à la fin -- en-têtes/pieds de page répétés retirés même en pleine phrase, mots coupés "
+        "recollés, titres dégagés ; voir core/md_cleanup.py)",
+    )
+    parser.add_argument(
         "--no-split",
         action="store_true",
         help="ne pas aérer les paragraphes longs à la fin (par défaut : 6 lignes max, coupés aux fins de phrase)",
@@ -126,6 +133,7 @@ def main() -> int:
         model_key=args.model,
         strategy=args.strategy,
         cleanup=not args.no_cleanup,
+        advanced_cleanup=not args.no_advanced_cleanup,
         split_paragraphs=not args.no_split,
         max_paragraph_lines=max(1, args.max_lines),
         output_format="pdf" if args.pdf else "md",

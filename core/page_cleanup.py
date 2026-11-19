@@ -128,6 +128,11 @@ class HeaderGroup:
 class PageCleanupReport:
     total_pages: int
     groups: list[HeaderGroup] = field(default_factory=list)
+    # Lignes ajoutées par d'autres traitements soumis à la MÊME décision,
+    # affichées dans la même fenêtre de vérification sans pause de plus --
+    # les en-têtes en pleine phrase du nettoyage avancé (19/11/2026, voir
+    # core/md_cleanup.py::preview_lines et pipeline.run_job).
+    extra_lines: list[str] = field(default_factory=list)
 
     @property
     def lines_removed(self) -> int:
@@ -144,6 +149,7 @@ class PageCleanupReport:
                 lines.append(f"« {label} » — en-tête/pied de page répété, {g.count} occurrences retirées")
         if len(ordered) > limit:
             lines.append(f"… et {len(ordered) - limit} autre(s) motif(s) répété(s).")
+        lines.extend(self.extra_lines)
         return lines
 
 

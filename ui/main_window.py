@@ -1506,6 +1506,29 @@ class MainWindow(QWidget):
         self.cleanup_check.setChecked(False)
         options.addWidget(self.cleanup_check)
 
+        # Coché par défaut (demandes explicites de l'utilisateur, 19/11/2026) :
+        # le traitement de l'outil « Nettoyage avancé d'un .md » appliqué au
+        # texte SOURCE avant la traduction, puis au .md terminé en filet de
+        # sécurité (voir core/md_cleanup.py, pipeline._maybe_clean_source_segments
+        # et _maybe_advanced_cleanup). Aucune pause : ce qui sera retiré
+        # s'ajoute à la fenêtre de vérification des pages quand elle s'affiche
+        # déjà, sinon au journal.
+        self.advanced_cleanup_check = ToggleSwitch(
+            "Nettoyage avancé — en-têtes de page répétés, mots coupés, titres"
+        )
+        self.advanced_cleanup_check.setToolTip(
+            "Retire les titres de haut ou de bas de page qui se répètent avec leur numéro, même "
+            "en plein milieu d'une phrase (« apportée 10 LE CÔTÉ CACHÉ DES CHOSES au corps » -> "
+            "« apportée au corps »), recolle les mots et paragraphes coupés par la page et remet "
+            "les titres de chapitre et de section sur leur propre ligne.\n\n"
+            "Fait sur le texte source AVANT la traduction (le moteur reçoit des phrases propres, "
+            "les mots coupés sont recollés tant qu'ils peuvent encore l'être), puis vérifié une "
+            "dernière fois à la fin. Environ 2 secondes par livre ; sans effet sur un document "
+            "qui n'en a pas."
+        )
+        self.advanced_cleanup_check.setChecked(True)
+        options.addWidget(self.advanced_cleanup_check)
+
         # Coché par défaut (demande explicite de l'utilisateur, 10/11/2026) :
         # « sépare chaque paragraphe, 6 lignes max » -- pour le .md comme pour
         # le PDF, voir core/paragraphs.py. Réversible comme le nettoyage :
@@ -1790,7 +1813,7 @@ class MainWindow(QWidget):
         undo_card = Card("Annuler le nettoyage des titres et traits d'union")
         undo_card.body.addWidget(_wrapped_label(
             "Restaure un .md déjà traduit exactement tel qu'il était avant le nettoyage de fin "
-            "(titres, traits d'union, paragraphes aérés)."
+            "(titres, traits d'union, nettoyage avancé, paragraphes aérés)."
         ))
 
         self.undo_path_edit = QLineEdit()
@@ -2637,6 +2660,7 @@ class MainWindow(QWidget):
             return
 
         cleanup = self.cleanup_check.isChecked()
+        advanced_cleanup = self.advanced_cleanup_check.isChecked()
         split_paragraphs = self.split_check.isChecked()
         job = pipeline.Job(
             input_path=self.source_path,
@@ -2645,6 +2669,7 @@ class MainWindow(QWidget):
             tgt_lang=tgt,
             model_key=model_key,
             cleanup=cleanup,
+            advanced_cleanup=advanced_cleanup,
             split_paragraphs=split_paragraphs,
             resume=resume_mode,
             use_vision_ocr=use_vision,
@@ -2685,6 +2710,7 @@ class MainWindow(QWidget):
             "tgt_lang": tgt,
             "model_key": model_key,
             "cleanup": cleanup,
+            "advanced_cleanup": advanced_cleanup,
             "split_paragraphs": split_paragraphs,
             "output_format": self.output_format_combo.currentData(),
         })
@@ -2748,6 +2774,8 @@ class MainWindow(QWidget):
         # Absent d'un job mémorisé par une version antérieure (avant le
         # 10/11/2026) : aéré par défaut, comme tout nouveau job.
         self.split_check.setChecked(bool(snapshot.get("split_paragraphs", True)))
+        # Idem pour le nettoyage avancé (avant le 19/11/2026) : actif par défaut.
+        self.advanced_cleanup_check.setChecked(bool(snapshot.get("advanced_cleanup", True)))
         format_idx = self.output_format_combo.findData(snapshot.get("output_format", "md"))
         if format_idx >= 0:
             self.output_format_combo.setCurrentIndex(format_idx)
@@ -3174,6 +3202,11 @@ class MainWindow(QWidget):
         else:
             if result.cleanup_report is not None:
                 self._append_log(result.cleanup_report.summary())
+            # Le rapport du texte source s'est déjà affiché en direct (étapes
+            # « Texte source — … ») ; ici, la vérification finale.
+            if result.md_cleanup_report is not None:
+                for line in result.md_cleanup_report.summary_lines():
+                    self._append_log(f"Vérification finale — {line}")
             if result.paragraph_report is not None:
                 self._append_log(result.paragraph_report.summary())
             for note in result.notes:  # ex. un échec d'export PDF, non bloquant
@@ -3235,6 +3268,7 @@ class MainWindow(QWidget):
             self.output_button,
             self.output_reset_button,
             self.cleanup_check,
+            self.advanced_cleanup_check,
             self.split_check,
             self.extract_only_check,
             self.translate_button,

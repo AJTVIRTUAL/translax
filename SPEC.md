@@ -3359,6 +3359,119 @@ Le fichier d'origine n'est JAMAIS modifié : résultat écrit à côté, « …
   modules embarqués vérifiés. Publiée sur GitHub (release `v1.23.0`) à la
   demande de l'utilisateur après son test.
 
+## 5 quadragies duo. Nettoyage avancé par défaut : texte source avant traduction, puis fin de job (ajouté le 19/11/2026)
+
+Demande explicite de l'utilisateur : « cette fonction utile que tu viens
+d'ajouter, je veux qu'elle puisse être une fonctionnalité par défaut aussi
+quand on traduit un livre, à l'issue de la traduction ou de l'extraction […]
+tu n'auras pas besoin de recoder, juste à connecter cela partout ».
+
+Aucun nouvel algorithme : `core/md_cleanup.clean_markdown` (§5 quadragies
+unus) est simplement branché sur la fin de chaque job.
+
+- **`core/pipeline.py`** : `Job.advanced_cleanup` (vrai par défaut),
+  `Result.md_cleanup_report`, `_maybe_advanced_cleanup`. Appliqué SUR PLACE
+  au .md terminé, dans les deux branches (Traduire / Traduire X, et
+  Extraire / Extraire X), à cette place précise de la chaîne :
+  nettoyage typographique → **nettoyage avancé** → aération → renommage →
+  PDF. Après le nettoyage typographique, parce que celui-ci exige un
+  alignement 1:1 blocs du .md / segments source que le recollage de
+  paragraphes casserait ; avant l'aération, qui redécoupe ainsi les
+  paragraphes recollés ; avant le PDF, qui en hérite. Jamais sur un job
+  interrompu (Pause/Stop) : le .md partiel sert à la reprise.
+- **Réversible** : même sauvegarde `.avant_nettoyage` que les autres
+  traitements de fin, écrite seulement si elle n'existe pas encore. L'outil
+  « Annuler le nettoyage » restaure le fichier d'avant TOUT le
+  post-traitement (texte de la carte mis à jour).
+- **Un échec ne fait jamais échouer le job** : note dans le journal, .md
+  laissé tel quel (même règle que l'aération et l'export PDF).
+- **Interface** : interrupteur « Nettoyage avancé — en-têtes de page
+  répétés, mots coupés, titres » (d'abord « … à la fin », renommé quand le
+  texte source a été nettoyé aussi, voir plus bas), activé par défaut, entre « Nettoyer
+  les titres et les traits d'union » et « Aérer les paragraphes » (ordre
+  réel du traitement) ; verrouillé pendant un job ; mémorisé dans les jobs
+  en attente (`advanced_cleanup`, vrai si absent d'un job d'une version
+  antérieure) ; rapport détaillé dans le journal en fin de job.
+- **Ligne de commande** : actif par défaut, `--no-advanced-cleanup` pour
+  le désactiver.
+- **Sans effet sur un document qui n'en a pas besoin** : aucun en-tête
+  n'est inventé (seuil de 3 numéros de page différents, voir §5 quadragies
+  unus).
+
+Tests : `tests/test_md_cleanup.py` §8 (pipeline en extraction seule, sans
+modèle : en-têtes retirés, exemple de l'utilisateur, titres, PDF, annulation,
+enchaînement avec nettoyage typographique + aération, option décochée →
+texte intact) ; `tests/test_ui.py` 11b (interrupteur coché par défaut) ;
+`tests/test_theme.py` §2 (interrupteur animé).
+
+### Puis : nettoyage du texte SOURCE, avant la traduction (même jour)
+
+Demande explicite de l'utilisateur, après explication détaillée : nettoyer
+le texte source AVANT la traduction, « surtout pertinent pour les livres qui
+nécessitent une Traduction X (OCR puis traduction) », à condition que ce ne
+soit pas plus long et **sans aucune pause de plus** (« je valide la version
+sans pause »).
+
+Pourquoi avant : un en-tête noyé dans une phrase est sinon traduit AVEC
+elle (le moteur peut le fondre dans la phrase, le rendre méconnaissable),
+et un mot coupé par la page (« spi28 THE HIDDEN SIDE OF THINGS ced ») est
+traduit en deux morceaux absurdes -- irréparable après coup.
+
+- **`md_cleanup.clean_segments`** : le nettoyage s'applique aux SEGMENTS,
+  juste après la segmentation. C'est la bonne forme : chaque paragraphe y a
+  déjà ses lignes recollées, exactement là où l'en-tête apparaît en pleine
+  phrase. Aller-retour par le Markdown : « # » → segment `title`, « ## » →
+  `heading`, puce et paragraphe commençant par « # », « - » (tiret de
+  dialogue) ou « ⟦ » protégés par un repère privé ; bloc `restricted`
+  (jamais traduit) mis de côté et remis tel quel, même s'il contient un
+  en-tête ; un intertitre fait d'un en-tête seul (« ## 20 LE COTÉ… »)
+  disparaît. Un chapitre dégagé devient un segment `title`, traduit à part.
+  Tableaux et notes renvoyés en fin de document : jamais touchés.
+- **Vérifié sur le vrai livre** (1 338 segments) : résultat identique à
+  l'outil (213 retraits, 35 mots recollés, 12 numéros de cahier,
+  90 paragraphes, 12 chapitres, 78 sections), **1,8 s**.
+- **Temps** : ~2 s avant + ~2 s de vérification finale, pour une
+  traduction qui se compte en dizaines de minutes ou en heures ; et 1,6 %
+  de mots en moins à traduire sur ce livre (1 149 mots d'en-têtes) -- le
+  travail total ne s'allonge pas.
+- **Aucune pause** : quand la fenêtre de vérification des pages s'affiche
+  DÉJÀ (en-têtes en bord de page détectés par `page_cleanup`), la liste des
+  en-têtes en pleine phrase y est ajoutée (`PageCleanupReport.extra_lines`,
+  calculée par `md_cleanup.preview_lines`). Sinon, application automatique
+  et rapport dans le journal (« Texte source — … »).
+- **« Utiliser l'original »** dans cette fenêtre coupe aussi le nettoyage
+  avancé pour ce job, avant ET après la traduction (l'utilisateur a choisi
+  de garder les en-têtes). Sur une reprise, la fenêtre ne s'affiche pas :
+  seul l'interrupteur compte.
+- **Limite assumée** : ce qui est retiré du texte source ne passe pas par
+  la sauvegarde `.avant_nettoyage` (rien n'est encore écrit) ; « Annuler le
+  nettoyage » ne restaure que le post-traitement de fin. Pour garder les
+  en-têtes : décocher l'interrupteur, ou « Utiliser l'original ».
+- **Langues sources** : mot « chapitre » reconnu en français, anglais,
+  espagnol, italien, allemand, néerlandais (gardé tel quel dans le titre,
+  puis traduit) ; numéro de chapitre en chiffres arabes accepté ; début de
+  phrase d'une lettre (« A saying… », « I have… », « À la fin… ») ; fins de
+  mots espagnoles, italiennes, allemandes ajoutées aux fragments connus.
+  Alphabet non latin : rien n'est détecté, rien n'est touché.
+- **Deux réparations trouvées sur le vrai livre au passage** (profitent
+  aussi à l'outil) : coquille d'OCR avec un point parasite entre deux mots
+  (« 210 LE COTÉ CACHÉ DES. GHOSES ») ; numéro de cahier COLLÉ au mot coupé
+  (« suivre jus14 210 LE COTÉ… qu'à » → « suivre jusqu'à », « s'em9 130 LE
+  COTÉ… plir » → « s'emplir »). Plus aucun en-tête restant sur le livre.
+
+Tests : `tests/test_md_cleanup.py` §9 (segments d'un livre anglais : en-têtes,
+mot coupé, chapitre en `title`, section après « A saying », bloc restreint
+intact et à sa place, puce, tiret de dialogue, intertitre-en-tête retiré),
+§10 (pipeline Traduire avec un faux moteur qui enregistre ce qu'il reçoit :
+aucun en-tête envoyé, phrase propre, mot recollé, titre traduit à part ;
+option décochée → texte envoyé tel quel), §11 (fenêtre de vérification :
+une seule, avec la liste ajoutée ; « original » → en-têtes gardés avant et
+après).
+
+**Version 1.24.0** (19/11/2026) : construite dans une copie isolée du
+projet -- TRANSLAX 1.23.0 tournait depuis `dist\` (traduction en cours de
+l'utilisateur) : jamais arrêté, `dist\` jamais réécrit.
+
 ## 6. Interface
 
 ```
