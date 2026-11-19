@@ -52,7 +52,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import document_flow, paragraphs as paragraphs_mod
+from . import document_flow, page_markers as page_markers_mod, paragraphs as paragraphs_mod
 
 # --- Mots en majuscules ------------------------------------------------------
 _UP = "A-ZÀ-ÖØ-ÞŒÆ"
@@ -116,9 +116,13 @@ class MdCleanupReport:
     chapters_extracted: int = 0
     sections_extracted: int = 0
     paragraph_report: paragraphs_mod.SplitReport | None = None
+    # Liste noire des numéros de page (« 17 of 103 »…, core/page_markers.py).
+    page_markers: page_markers_mod.MarkerReport = field(default_factory=page_markers_mod.MarkerReport)
 
     def summary_lines(self) -> list[str]:
         lines: list[str] = []
+        if self.page_markers.total:
+            lines.append(self.page_markers.summary())
         if self.headers:
             found = ", ".join(f"« {h.text} » ({h.removed}×)" for h in self.headers if h.removed)
             lines.append(f"En-têtes / pieds de page retirés : {self.occurrences_removed} — {found}.")
@@ -514,6 +518,11 @@ def clean_markdown(
     report = MdCleanupReport()
     text = text.replace("\r\n", "\n").replace("\f", "\n\n")
 
+    # 0. Liste noire des numéros de page (« 17 of 103 »…) -- EN PREMIER : collés
+    # à un en-tête, ils fausseraient sa détection ; retirés, ils laissent deux
+    # moitiés de phrase que le recollage ci-dessous remet ensemble.
+    text, report.page_markers = page_markers_mod.strip_markers(text)
+
     report.headers = detect_running_headers(text)
     text = remove_running_headers(text, report.headers, report)
 
@@ -610,13 +619,17 @@ def preview_lines(text: str) -> list[str]:
     montrer dans la fenêtre de vérification déjà affichée, sans pause de
     plus (voir pipeline.run_job). Vide s'il n'y en a aucun.
     """
+    lines: list[str] = []
+    text, markers = page_markers_mod.strip_markers(text)  # lignes encore intactes : « seul sur sa ligne » visible
+    if markers.total:
+        lines.append(markers.summary())
     paragraphs = re.split(r"\n\s*\n", text.replace("\f", "\n\n"))
     flat = "\n\n".join(" ".join(p.split()) for p in paragraphs if p.strip())
     headers = detect_running_headers(flat)
-    if not headers:
-        return []
-    found = ", ".join(f"« {h.text} » ({len(h.pages)} pages)" for h in headers)
-    return [f"En plein texte (nettoyage avancé) : {found} -- retirés avec leurs numéros, mots coupés recollés."]
+    if headers:
+        found = ", ".join(f"« {h.text} » ({len(h.pages)} pages)" for h in headers)
+        lines.append(f"En plein texte (nettoyage avancé) : {found} -- retirés avec leurs numéros, mots coupés recollés.")
+    return lines
 
 
 def cleaned_path(source: Path) -> Path:

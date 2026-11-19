@@ -106,6 +106,11 @@ def _strip_number_token(text: str) -> str:
     return re.sub(r"\s+", " ", core).strip()
 
 
+# Ce qui reste d'une pagination « 17 of 103 », « 17 / 103 »… une fois ses deux
+# numéros retirés par `_strip_number_token` (voir core/page_markers.py).
+_PAGINATION_CONNECTORS = {"of", "/", "sur", "von", "de", "di"}
+
+
 @dataclass
 class HeaderOccurrence:
     page_index: int
@@ -144,6 +149,12 @@ class PageCleanupReport:
         for g in ordered[:limit]:
             if g.is_page_number:
                 lines.append(f"Numéros de page isolés — {g.count} occurrences retirées")
+            elif g.representative.strip().lower() in _PAGINATION_CONNECTORS:
+                # « 17 of 103 » privé de ses deux numéros ne laisse que « of » :
+                # c'est une pagination, pas un en-tête nommé « of ».
+                lines.append(
+                    f"Numéros de page « N {g.representative.strip()} M » — {g.count} occurrences retirées"
+                )
             else:
                 label = g.representative or "(vide)"
                 lines.append(f"« {label} » — en-tête/pied de page répété, {g.count} occurrences retirées")

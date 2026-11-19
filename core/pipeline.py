@@ -41,6 +41,7 @@ from . import (
     layout as layout_mod,
     md_cleanup,
     page_cleanup,
+    page_markers,
     paragraphs as paragraphs_mod,
     pdf_export,
     postprocess,
@@ -577,6 +578,21 @@ def run_job(
         raw_text = cleaned_text if page_decision == "clean" else raw_text
         if page_decision == "original":
             advanced = False  # garder les en-têtes : ni avant, ni après la traduction
+
+        # --- Liste noire des numéros de page (« 17 of 103 »…) ---------------
+        # Sur le texte BRUT, avant le recollage ci-dessous : un marqueur seul
+        # sur sa ligne s'y voit encore comme tel (garde-fou de
+        # core/page_markers.py), et la phrase qu'il coupait est ensuite
+        # recollée par `document_flow.repair` (demande explicite de
+        # l'utilisateur, 19/11/2026). Fait partie du nettoyage avancé.
+        if advanced:
+            try:
+                raw_text, marker_report = page_markers.strip_markers(raw_text)
+            except Exception as exc:  # noqa: BLE001 - jamais bloquant
+                notes.append(f"Liste noire des numéros de page non appliquée ({exc}).")
+            else:
+                if marker_report.total:
+                    status(f"Texte source — {marker_report.summary()}")
 
         # --- Remise en ordre du fil : doublons, paragraphes coupes -------
         # S'applique aux DEUX boutons : le texte issu de l'OCR (« Traduire X »)

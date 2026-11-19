@@ -3472,6 +3472,70 @@ après).
 projet -- TRANSLAX 1.23.0 tournait depuis `dist\` (traduction en cours de
 l'utilisateur) : jamais arrêté, `dist\` jamais réécrit.
 
+## 5 quadragies tres. Liste noire des numéros de page (ajouté le 19/11/2026)
+
+Demande explicite de l'utilisateur : traiter aussi les « 17 of 103 », « 18 of
+103 »… -- « if (number) + of + (number), alors cela doit être détecté et
+supprimé automatiquement, surtout si ça coupe une phrase » -- sous forme
+d'une liste noire extensible (« je vais certainement inclure de futurs
+éléments »). Exemple réel :
+
+    … during the previous life when she was
+    17 of 103
+    implicated in the witch-cult.
+ -> … during the previous life when she was implicated in the witch-cult.
+
+**Ce qui existait déjà** : un « 17 of 103 » sur la DERNIÈRE ligne d'une page
+de PDF à couche texte était déjà retiré par `page_cleanup` (ses deux
+numéros ôtés, il restait le motif « of », répété sur chaque page) -- mais
+affiché comme un en-tête « of » dans la fenêtre de vérification (désormais
+« Numéros de page « N of M » »). Rien ne le retirait quand il arrivait au
+milieu du texte : .md déjà assemblé, sortie d'OCR, ligne qui n'est pas en
+bord de page.
+
+- **`core/page_markers.py`, `BLACKLIST`** : une entrée par marqueur (`name`,
+  `regex` avec les groupes `num` et `total`, `inline`, `examples`). Fournis :
+  « N of M » (et « Page N of M »), « N / M » (espaces obligatoires : jamais
+  « 3/4 » ni une date ; c'est aussi le pied de page des PDF de TRANSLAX),
+  « N sur M », « Seite N von M », « Página N de M », « Pagina N di M » ; et,
+  seulement seuls sur leur ligne, « Page N » / « p. N » et « - N - ».
+  **Ajouter un marqueur = ajouter une entrée** ; ses `examples` sont testés
+  automatiquement (`tests/test_page_markers.py` §4).
+- **Garde-fous** : regroupement par marqueur ET par total ; numéro > total
+  ignoré ; un groupe n'est retiré que s'il ressemble à une pagination --
+  au moins une occurrence seule sur sa ligne et 2 numéros différents, ou,
+  uniquement en pleine phrase, 5 numéros différents qui avancent comme des
+  pages (80 % de paires croissantes). Ainsi « 3 of 10 patients… 7 of 10… »
+  reste intact, comme « voir page 12 », « 3/4 », « 12/05/1920 ».
+- **Où** : dans le nettoyage avancé (même interrupteur, actif par défaut),
+  donc partout -- outil « Nettoyage avancé d'un .md », texte source avant
+  traduction, vérification finale ; et, dans le pipeline, sur le texte BRUT
+  juste avant `document_flow.repair` : « seul sur sa ligne » s'y voit
+  encore, et la phrase coupée est ensuite recollée. Un saut de page (\f)
+  n'est jamais retiré. Journal : « Texte source — Numéros de page retirés
+  (liste noire) : 101 — « N of 103 » ×101. » ; listé aussi dans la fenêtre de
+  vérification des pages quand elle s'affiche.
+- Vérifié sans aucun faux positif sur les .md réels de l'utilisateur
+  (Leadbeater, etc. -- qui n'ont pas ce genre de pagination).
+
+Tests : `tests/test_page_markers.py` (exemple exact de l'utilisateur, ligne
+seule / entourée de lignes vides / dernière ligne d'une page, pleine phrase,
+garde-fous, chaque exemple de la liste, libellé de la fenêtre de
+vérification, pipeline extraction + traduction avec un faux moteur qui
+enregistre ce qu'il reçoit, option décochée).
+
+**Incident à ne jamais reproduire** (19/11/2026, deux fois) :
+`tests/test_installer.py` §5 appelle `operations.close_running_translax()`,
+qui lance `taskkill /IM TRANSLAX.exe` -- TOUS les TRANSLAX de la machine, pas
+seulement le faux processus du test. Lancer la suite complète pendant une
+traduction de l'utilisateur l'a fermée deux fois. Ne jamais lancer ce test
+(ni une boucle sur `tests/`) tant qu'un TRANSLAX tourne ; correctif du test
+proposé, en attente de l'accord de l'utilisateur.
+
+**Version 1.25.0** (19/11/2026) : construite dans une copie isolée (traduction
+de l'utilisateur en cours : `dist\` jamais réécrit, exe non lancé pour test,
+seuls les tests sans risque relancés).
+
 ## 6. Interface
 
 ```

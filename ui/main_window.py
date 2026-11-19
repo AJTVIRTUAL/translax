@@ -1519,8 +1519,9 @@ class MainWindow(QWidget):
         self.advanced_cleanup_check.setToolTip(
             "Retire les titres de haut ou de bas de page qui se répètent avec leur numéro, même "
             "en plein milieu d'une phrase (« apportée 10 LE CÔTÉ CACHÉ DES CHOSES au corps » -> "
-            "« apportée au corps »), recolle les mots et paragraphes coupés par la page et remet "
-            "les titres de chapitre et de section sur leur propre ligne.\n\n"
+            "« apportée au corps »), ainsi que les numéros de page du type « 17 of 103 » (liste "
+            "noire, core/page_markers.py), recolle les mots et paragraphes coupés par la page et "
+            "remet les titres de chapitre et de section sur leur propre ligne.\n\n"
             "Fait sur le texte source AVANT la traduction (le moteur reçoit des phrases propres, "
             "les mots coupés sont recollés tant qu'ils peuvent encore l'être), puis vérifié une "
             "dernière fois à la fin. Environ 2 secondes par livre ; sans effet sur un document "
