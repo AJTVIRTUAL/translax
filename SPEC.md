@@ -3279,6 +3279,86 @@ plus d'ordre visuel ; plus d'animations ».
   version affichée) ; installeur `TRANSLAX-Setup-1.22.0.exe` publié en
   GitHub Release v1.22.0, pas testé par une vraie installation.
 
+## 5 quadragies unus. Nettoyage avancé d'un .md importé (ajouté le 19/11/2026)
+
+Demande explicite de l'utilisateur : « une option où je peux importer un
+fichier md, avec un traitement avancé : détecter les titres en plein milieu
+des phrases qui se répètent (haut ou bas de page) et réorganiser
+correctement ». Exemple réel (Leadbeater, « Le côté caché des choses »,
+tome 2) : « … apportée 10 LE COTÉ CACHÉ DES CHOSES au corps mental … » doit
+redevenir « … apportée au corps mental … ».
+
+Pourquoi un module à part (`core/md_cleanup.py`) : dans un .md déjà
+assemblé il n'y a plus de pages -- les en-têtes courants sont NOYÉS dans les
+paragraphes. `page_cleanup.py` et `document_flow.py` travaillent sur les
+lignes du haut et du bas de chaque page, avant assemblage : ils ne peuvent
+rien ici.
+
+### Étapes
+
+1. **En-têtes appris dans le document** (`detect_running_headers`), jamais
+   une liste figée : une suite de mots EN MAJUSCULES collée à un numéro de
+   page (avant ou après), revenant avec au moins 3 numéros différents (4
+   pour un seul mot). On garde les candidats les plus longs (« LE COTÉ » est
+   un morceau de « LE COTÉ CACHÉ DES CHOSES » ; « PAR NOS » est couvert par
+   « PAR NOS HABITUDES », « PAR NOS AMUSEMENTS »…). Jamais le mot
+   « CHAPITRE » dans un en-tête. Coquilles d'OCR rattachées à leur en-tête
+   (« LF COTÉ… », « CIIOSES », « GOTÉ » -- similarité >= 0,9).
+2. **Retrait** partout, même en pleine phrase, sauf dans la table des
+   matières (précédé d'un tiret ou de « CHAPITRE XIV. ») :
+   - mot coupé par la page, le numéro collé au mot (« d'ali28 … ments ») :
+     recollé SI le mot recollé existe ailleurs dans le livre, ou si l'un des
+     morceaux n'est pas un mot du livre, ou si la fin est une terminaison
+     typique (« ment », « tion »…) ; laissé séparé sinon -- cas réel de
+     texte manquant dans la source : « aussi parfaite156 LE COTÉ… ce point
+     de vue » ne devient jamais « parfaitece ». Le vocabulaire du livre est
+     calculé SANS les morceaux coupés (sinon « ment » passerait pour un mot) ;
+   - numéro de cahier d'imprimeur posé juste avant (« Pendant 2 18 LE
+     COTÉ… ») : retiré (vérifié : 2, 3, 4, 5, 7… toutes les 16 pages).
+3. **Paragraphes coupés par la page recollés** : `document_flow.stitch_pages`
+   réutilisé tel quel (césure « habi- » + « tués » comprise, note
+   intercalée enjambée).
+4. **Titres dégagés** : « CHAPITRE XIV PAR NOS HABITUDES NOURRITURE Une
+   sentence… » -> « # CHAPITRE XIV — PAR NOS HABITUDES », « ## NOURRITURE »,
+   puis le texte (le titre courant connu sépare chapitre et section ; numéro
+   romain gardé tel quel, coquille comprise : « XVIH »). Section en
+   majuscules seulement en début de paragraphe ou après une vraie fin de
+   phrase (jamais après une initiale : « C. W. LEADBEATER »), et suivie
+   d'un vrai début de phrase.
+5. Optionnel : aération des paragraphes (6 lignes) et PDF.
+
+Le fichier d'origine n'est JAMAIS modifié : résultat écrit à côté, « …
+(nettoyé).md » (puis « (nettoyé 2) »…). Aucun mot d'auteur réécrit.
+
+### Interface et CLI
+
+- Hall : 4ᵉ service « NETTOYAGE AVANCÉ D'UN .MD » -> écran dédié
+  (`PAGE_CLEAN`) : zone de dépôt (le glisser-déposer vise cette zone quand
+  l'écran est affiché), interrupteurs (titres / aération / PDF), bouton
+  « Nettoyer le fichier », rapport détaillé, « Ouvrir le fichier / le
+  dossier ». Traitement dans un thread (`MdCleanupWorker`).
+- `python cli.py nettoyer livre.md [--pdf] [--sans-titres] [--sans-aeration]`.
+
+### Vérifié
+
+- Sur le vrai livre (432 Ko) : 13 titres courants appris (titre du livre +
+  12 titres de chapitre), 212 retraits dont 6 coquilles d'OCR, 0 trace
+  restante, 33 mots recollés, 10 numéros de cahier, 90 paragraphes
+  recollés, 12 chapitres (XIV à XXV) et 78 sections dégagés -- conformes à
+  la table des matières du livre ; l'exemple de l'utilisateur ressort mot
+  pour mot ; table des matières intacte ; ~2,5 s.
+- Chaque décision de recollage relue une à une (36 sites) ; mots d'auteur
+  perdus : uniquement les morceaux recollés.
+- `tests/test_md_cleanup.py` (nouveau) : faux livre reprenant chaque piège ;
+  écran testé de bout en bout (dépôt du fichier -> rapport -> fichier créé).
+- Piège de test noté : attendre un thread de travail avec `QTest.qWait`
+  bloque le verrou Python -- le thread n'avance plus ; il faut une vraie
+  boucle (`QEventLoop`), comme les tests du projet et comme l'appli réelle.
+- **Version 1.23.0** (19/11/2026) : exe + installeur `TRANSLAX-Setup-1.23.0.exe`
+  construits ; exe empaqueté lancé (hall à 4 services, version affichée),
+  modules embarqués vérifiés. Publiée sur GitHub (release `v1.23.0`) à la
+  demande de l'utilisateur après son test.
+
 ## 6. Interface
 
 ```

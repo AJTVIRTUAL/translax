@@ -57,6 +57,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from core import heartbeat as heartbeat_mod
+from core import md_cleanup
 from core import paragraphs
 from core import pdf_export
 from core import pipeline
@@ -93,6 +94,38 @@ class ReflowWorker(QObject):
             self.failed.emit(f"{type(exc).__name__} : {exc}")
             return
         self.finished.emit((report, pdf_path))
+
+
+class MdCleanupWorker(QObject):
+    """
+    Écran « Nettoyage avancé » : nettoie un .md importé (voir
+    core/md_cleanup.py) hors du thread principal -- environ 2 s pour un livre
+    de 400 000 caractères, plus ~6 s si le PDF est demandé.
+    """
+
+    finished = Signal(object)  # (Path du .md écrit, Path du PDF ou None, md_cleanup.MdCleanupReport)
+    failed = Signal(str)
+
+    def __init__(self, source: Path, *, extract_headings: bool, aerate: bool, make_pdf: bool):
+        super().__init__()
+        self.source = Path(source)
+        self.extract_headings = extract_headings
+        self.aerate = aerate
+        self.make_pdf = make_pdf
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            outcome = md_cleanup.clean_file(
+                self.source,
+                extract_headings=self.extract_headings,
+                aerate=self.aerate,
+                make_pdf=self.make_pdf,
+            )
+        except Exception as exc:  # noqa: BLE001 - message lisible plutôt qu'un thread qui meurt en silence
+            self.failed.emit(f"{type(exc).__name__} : {exc}")
+            return
+        self.finished.emit(outcome)
 
 
 class TranslationWorker(QObject):

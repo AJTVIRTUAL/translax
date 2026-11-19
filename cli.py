@@ -14,6 +14,11 @@ core/server.py et SPEC.md §5 tricies octies) :
 
     python cli.py serve --port 8765 --engine madlad-ct2
     python cli.py serve --help
+
+Nettoyage avancé d'un .md déjà assemblé (en-têtes/pieds de page répétés,
+mots coupés, titres -- voir core/md_cleanup.py) :
+
+    python cli.py nettoyer livre.md --pdf
 """
 from __future__ import annotations
 
@@ -36,12 +41,44 @@ def format_duration(seconds: float) -> str:
     return f"{secs} s"
 
 
+def clean_main(argv: list[str]) -> int:
+    """`python cli.py nettoyer livre.md [--pdf] [--sans-titres] [--sans-aeration]`"""
+    from core import md_cleanup
+
+    parser = argparse.ArgumentParser(
+        prog="cli.py nettoyer",
+        description="Nettoyage avancé d'un .md : en-têtes/pieds de page répétés, mots coupés, titres.",
+    )
+    parser.add_argument("input", help="fichier .md (ou .txt) à nettoyer -- jamais modifié")
+    parser.add_argument("--pdf", action="store_true", help="générer aussi un PDF")
+    parser.add_argument("--sans-titres", action="store_true", help="ne pas dégager les titres collés au texte")
+    parser.add_argument("--sans-aeration", action="store_true", help="ne pas aérer les paragraphes (6 lignes max)")
+    args = parser.parse_args(argv)
+
+    destination, pdf_path, report = md_cleanup.clean_file(
+        Path(args.input),
+        extract_headings=not args.sans_titres,
+        aerate=not args.sans_aeration,
+        make_pdf=args.pdf,
+    )
+    for line in report.summary_lines():
+        print(line)
+    print(f"Fichier créé : {destination}")
+    if pdf_path is not None:
+        print(f"PDF : {pdf_path}")
+    return 0
+
+
 def main() -> int:
     # Sous-commande « serve » : serveur de traduction compatible DeepL. Un
     # fichier réellement nommé « serve » reste traduisible comme avant.
     if len(sys.argv) > 1 and sys.argv[1] == "serve" and not Path("serve").exists():
         from core import server
         return server.main(sys.argv[2:])
+    # Sous-commande « nettoyer » : nettoyage avancé d'un .md existant (voir
+    # core/md_cleanup.py). Même garde-fou qu'au-dessus pour un vrai fichier.
+    if len(sys.argv) > 1 and sys.argv[1] == "nettoyer" and not Path("nettoyer").exists():
+        return clean_main(sys.argv[2:])
 
     parser = argparse.ArgumentParser(description="TRANSLAX — traduction locale NLLB-200")
     parser.add_argument("input", help="fichier PDF, TXT ou MD à traduire")

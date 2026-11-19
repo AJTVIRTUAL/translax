@@ -49,6 +49,7 @@ from core import (
     cache_maintenance,
     extract,
     keep_awake,
+    md_cleanup,
     page_cleanup,
     paragraphs,
     pipeline,
@@ -64,7 +65,13 @@ from core.languages import DEFAULT_SOURCE, DEFAULT_TARGET, LANGUAGES
 from ui import animations, theme, window_effects
 from ui.titlebar import RESIZE_MARGIN, TITLE_BAR_HEIGHT, TitleBar
 from ui.widgets import AnimatedProgressBar, ToggleSwitch
-from ui.worker import ReflowWorker, TranslationWorker, UpdateCheckWorker, UpdateDownloadWorker
+from ui.worker import (
+    MdCleanupWorker,
+    ReflowWorker,
+    TranslationWorker,
+    UpdateCheckWorker,
+    UpdateDownloadWorker,
+)
 
 MAX_LOG_LINES = 800
 PROGRESS_ANIMATION_MS = 220  # durée de la transition de la barre de progression : discrète, pas un effet voyant
@@ -75,6 +82,10 @@ PAGE_HUB = 0
 PAGE_TRANSLATE = 1
 PAGE_TOOLS = 2
 PAGE_SETTINGS = 3
+PAGE_CLEAN = 4      # nettoyage avancé d'un .md importé (19/11/2026)
+
+# Fichiers acceptés par le nettoyage avancé : du texte déjà assemblé.
+CLEANABLE_SUFFIXES = {".md", ".markdown", ".txt"}
 
 TRANSLATE_SUBTITLE = "Traduction locale de documents, entièrement sur votre machine."
 EXTRACT_SUBTITLE = "Texte source extrait et nettoyé, sans traduction."
@@ -820,7 +831,7 @@ class MainWindow(QWidget):
         hub = QWidget()
         layout = QVBoxLayout(hub)
         layout.setContentsMargins(40, 60, 40, 60)
-        layout.setSpacing(28)
+        layout.setSpacing(20)  # 4 services depuis le 19/11/2026 : un peu moins d'air entre eux
         layout.addStretch(1)
 
         title = QLabel("TRANSLAX")
@@ -850,6 +861,15 @@ class MainWindow(QWidget):
             "Extraire et nettoyer un texte, sans le traduire.",
             self._go_to_extract,
         )
+        # Quatrième service (19/11/2026, demande explicite de l'utilisateur :
+        # « une option où je peux importer un fichier md ») -- voir
+        # _build_clean_page et core/md_cleanup.py.
+        clean_btn = hub_button(
+            "NETTOYAGE AVANCÉ D'UN .MD",
+            "Importer un fichier .md : en-têtes et pieds de page répétés retirés (même en "
+            "pleine phrase), mots coupés recollés, titres remis à leur place.",
+            self._go_to_clean,
+        )
         undo_btn = hub_button(
             "AÉRER / ANNULER NETTOYAGE",
             "Aérer les paragraphes d'un fichier déjà traduit (6 lignes max), "
@@ -858,6 +878,7 @@ class MainWindow(QWidget):
         )
         layout.addWidget(translate_btn)
         layout.addWidget(extract_btn)
+        layout.addWidget(clean_btn)
         layout.addWidget(undo_btn)
 
         # Lien secondaire, pas un quatrième "service" au même niveau que les
@@ -891,6 +912,9 @@ class MainWindow(QWidget):
 
     def _go_to_tools(self) -> None:
         self._navigate_to(PAGE_TOOLS)
+
+    def _go_to_clean(self) -> None:
+        self._navigate_to(PAGE_CLEAN)
 
     def _go_to_settings(self) -> None:
         # La détection matérielle ne se lance PLUS automatiquement en
@@ -1710,6 +1734,7 @@ class MainWindow(QWidget):
 
         self._build_tools_page()
         self._build_settings_page()
+        self._build_clean_page()
 
         # Le hall d'accueil, pas l'écran de traduction, est le tout premier
         # écran vu au lancement (demande explicite de l'utilisateur).
@@ -1800,6 +1825,190 @@ class MainWindow(QWidget):
             animations.reveal(label)
         else:
             label.setVisible(False)
+
+    # ------------------------------------------- nettoyage avancé d'un .md
+    def _build_clean_page(self) -> None:
+        """
+        Écran « Nettoyage avancé » (demande explicite de l'utilisateur,
+        19/11/2026) : importer un .md et en retirer les en-têtes / pieds de
+        page répétés, même noyés en pleine phrase (« … apportée 10 LE COTÉ
+        CACHÉ DES CHOSES au corps … »), recoller les mots et paragraphes
+        coupés par la page, et remettre les titres à leur place -- voir
+        core/md_cleanup.py. Le résultat est un NOUVEAU fichier, à côté de
+        l'original, qui n'est jamais modifié.
+        """
+        self._clean_source: Path | None = None
+        self._clean_result: Path | None = None
+        self._clean_thread: QThread | None = None
+        self._clean_worker: MdCleanupWorker | None = None
+
+        page = QWidget()
+        root = _page_layout(page)
+        self._page_header(
+            root,
+            "Nettoyage avancé",
+            "En-têtes et pieds de page répétés retirés, phrases recollées, titres remis à leur place.",
+        )
+
+        file_card = Card(
+            "Fichier .md à nettoyer",
+            info=(
+                "TRANSLAX apprend tout seul les en-têtes et pieds de page du document : les "
+                "phrases en majuscules qui reviennent collées à des numéros de page différents "
+                "(« 10 LE COTÉ CACHÉ DES CHOSES », « PAR NOS HABITUDES 17 »…). Il les retire "
+                "partout, même en pleine phrase, recolle les mots coupés par la page "
+                "(« d'ali… ments » → « d'aliments ») et les paragraphes coupés, retire les "
+                "numéros de cahier d'imprimeur, et sort de leur paragraphe les titres de "
+                "chapitre et de section restés collés au texte. La table des matières n'est "
+                "jamais touchée. Le fichier d'origine n'est jamais modifié : le résultat est "
+                "écrit à côté, sous le nom « … (nettoyé).md »."
+            ),
+        )
+        self.clean_drop_zone = QFrame()
+        self.clean_drop_zone.setObjectName("dropZone")
+        zone_layout = QVBoxLayout(self.clean_drop_zone)
+        zone_layout.setContentsMargins(18, 22, 18, 22)
+        zone_layout.setSpacing(6)
+        self.clean_file_label = QLabel("Glissez un fichier .md ici")
+        self.clean_file_label.setObjectName("fileName")
+        self.clean_file_label.setAlignment(Qt.AlignCenter)
+        self.clean_file_details = _wrapped_label("ou utilisez le bouton Parcourir")
+        self.clean_file_details.setObjectName("fileDetails")
+        self.clean_file_details.setAlignment(Qt.AlignCenter)
+        zone_layout.addWidget(self.clean_file_label)
+        zone_layout.addWidget(self.clean_file_details)
+        file_card.body.addWidget(self.clean_drop_zone)
+        browse_row = QHBoxLayout()
+        browse_row.addStretch()
+        self.clean_browse_button = QPushButton("Parcourir…")
+        self.clean_browse_button.clicked.connect(self._pick_clean_file)
+        browse_row.addWidget(self.clean_browse_button)
+        browse_row.addStretch()
+        file_card.body.addLayout(browse_row)
+        root.addWidget(file_card)
+
+        options_card = Card("Options")
+        options = QVBoxLayout()
+        options.setSpacing(2)
+        self.clean_titles_check = ToggleSwitch("Dégager les titres collés au texte (chapitres, sections)")
+        self.clean_titles_check.setChecked(True)
+        self.clean_aerate_check = ToggleSwitch(
+            f"Aérer les paragraphes — {paragraphs.DEFAULT_MAX_LINES} lignes max, coupés entre deux phrases"
+        )
+        self.clean_aerate_check.setChecked(True)
+        self.clean_pdf_check = ToggleSwitch("Générer aussi le PDF (texte agrandi, numéros de page)")
+        self.clean_pdf_check.setChecked(False)
+        for toggle in (self.clean_titles_check, self.clean_aerate_check, self.clean_pdf_check):
+            options.addWidget(toggle)
+        options_label = _field_label("Traitement")
+        options_label.setFixedHeight(self.clean_titles_check.sizeHint().height())
+        options_card.add_field(options_label, options)
+        root.addWidget(options_card)
+
+        self.clean_button = QPushButton("Nettoyer le fichier")
+        self.clean_button.setObjectName("primary")
+        self.clean_button.setEnabled(False)
+        self.clean_button.clicked.connect(self._start_clean)
+        root.addWidget(self.clean_button)
+
+        result_card = Card("Résultat")
+        self.clean_status_label = _wrapped_label("Choisissez ou glissez un fichier .md à nettoyer.")
+        self.clean_status_label.setObjectName("outputPreview")
+        result_card.body.addWidget(self.clean_status_label)
+        self.clean_open_file_button = QPushButton("Ouvrir le fichier")
+        self.clean_open_file_button.clicked.connect(lambda: self._open(self._clean_result))
+        self.clean_open_folder_button = QPushButton("Ouvrir le dossier")
+        self.clean_open_folder_button.clicked.connect(
+            lambda: reveal_in_explorer(self._clean_result) if self._clean_result else None
+        )
+        self.clean_open_file_button.setEnabled(False)
+        self.clean_open_folder_button.setEnabled(False)
+        result_card.add_actions(self.clean_open_file_button, self.clean_open_folder_button)
+        root.addWidget(result_card)
+        root.addStretch(1)
+
+        self.pages.addWidget(_page_scroll(page))  # index PAGE_CLEAN
+
+    def _pick_clean_file(self) -> None:
+        start = str(self._clean_source.parent) if self._clean_source else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choisir un fichier à nettoyer", start, "Markdown ou texte (*.md *.markdown *.txt)"
+        )
+        if path:
+            self._set_clean_source(Path(path))
+
+    def _set_clean_source(self, path: Path) -> None:
+        if path.suffix.lower() not in CLEANABLE_SUFFIXES:
+            QMessageBox.warning(
+                self, "Format non pris en charge",
+                f"« {path.name} » n'est pas un fichier .md (ni .txt).",
+            )
+            return
+        self._clean_source = path
+        self._clean_result = None
+        self.clean_file_label.setText(path.name)
+        self.clean_file_details.setText(f"{format_size(path.stat().st_size)} · {path.parent}")
+        self.clean_drop_zone.setProperty("filled", True)
+        self._restyle(self.clean_drop_zone)
+        self.clean_status_label.setText(
+            "Prêt : le résultat sera écrit à côté, sous le nom "
+            f"« {md_cleanup.cleaned_path(path).name} » (l'original n'est pas modifié)."
+        )
+        self.clean_button.setEnabled(self._clean_thread is None)
+        self.clean_open_file_button.setEnabled(False)
+        self.clean_open_folder_button.setEnabled(False)
+
+    def _start_clean(self) -> None:
+        if self._clean_source is None or self._clean_thread is not None:
+            return
+        if not self._clean_source.exists():
+            self.clean_status_label.setText("Fichier introuvable.")
+            return
+        for widget in (self.clean_button, self.clean_browse_button, self.clean_titles_check,
+                       self.clean_aerate_check, self.clean_pdf_check):
+            widget.setEnabled(False)
+        self.clean_status_label.setText("Nettoyage en cours…")
+        self._clean_thread = QThread(self)
+        self._clean_worker = MdCleanupWorker(
+            self._clean_source,
+            extract_headings=self.clean_titles_check.isChecked(),
+            aerate=self.clean_aerate_check.isChecked(),
+            make_pdf=self.clean_pdf_check.isChecked(),
+        )
+        self._clean_worker.moveToThread(self._clean_thread)
+        self._clean_thread.started.connect(self._clean_worker.run)
+        self._clean_worker.finished.connect(self._on_clean_finished)
+        self._clean_worker.failed.connect(self._on_clean_failed)
+        self._clean_worker.finished.connect(self._clean_thread.quit)
+        self._clean_worker.failed.connect(self._clean_thread.quit)
+        self._clean_thread.finished.connect(self._on_clean_thread_finished)
+        self._clean_thread.start()
+
+    @Slot(object)
+    def _on_clean_finished(self, outcome) -> None:
+        destination, pdf_path, report = outcome
+        self._clean_result = pdf_path or destination
+        lines = report.summary_lines() + [f"Fichier créé : {destination.name}"]
+        if pdf_path is not None:
+            lines.append(f"PDF : {pdf_path.name}")
+        self.clean_status_label.setText("\n".join(lines))
+        self.clean_open_file_button.setEnabled(True)
+        self.clean_open_folder_button.setEnabled(True)
+
+    @Slot(str)
+    def _on_clean_failed(self, message: str) -> None:
+        self.clean_status_label.setText(f"Échec : {message}")
+
+    @Slot()
+    def _on_clean_thread_finished(self) -> None:
+        if self._clean_thread is not None:
+            self._clean_thread.deleteLater()
+        self._clean_thread = None
+        self._clean_worker = None
+        for widget in (self.clean_browse_button, self.clean_titles_check,
+                       self.clean_aerate_check, self.clean_pdf_check):
+            widget.setEnabled(True)
+        self.clean_button.setEnabled(self._clean_source is not None)
 
     # ------------------------------------------- outil : aérer un .md existant
     def _pick_reflow_file(self) -> None:
@@ -2266,23 +2475,40 @@ class MainWindow(QWidget):
         self._update_output_preview()
 
     # ------------------------------------------------------ glisser-déposer
+    def _drop_target(self):
+        """
+        Zone qui reçoit un fichier glissé dans la fenêtre : celle de l'écran
+        « Nettoyage avancé » quand il est affiché (19/11/2026), sinon -- comme
+        toujours -- le document à traduire. Renvoie (zone, accepte(path), prend(path)).
+        """
+        if self.pages.currentIndex() == PAGE_CLEAN:
+            return (
+                self.clean_drop_zone,
+                lambda p: p.suffix.lower() in CLEANABLE_SUFFIXES and self._clean_thread is None,
+                self._set_clean_source,
+            )
+        return self.drop_zone, extract.is_supported, self._set_source
+
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - API Qt
+        zone, accepts, _take = self._drop_target()
         urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
-        if urls and extract.is_supported(Path(urls[0].toLocalFile())):
+        if urls and accepts(Path(urls[0].toLocalFile())):
             event.acceptProposedAction()
-            self.drop_zone.setProperty("hover", True)
-            self._restyle(self.drop_zone)
+            zone.setProperty("hover", True)
+            self._restyle(zone)
 
     def dragLeaveEvent(self, event) -> None:  # noqa: N802 - API Qt
-        self.drop_zone.setProperty("hover", False)
-        self._restyle(self.drop_zone)
+        zone, _accepts, _take = self._drop_target()
+        zone.setProperty("hover", False)
+        self._restyle(zone)
 
     def dropEvent(self, event) -> None:  # noqa: N802 - API Qt
-        self.drop_zone.setProperty("hover", False)
-        self._restyle(self.drop_zone)
+        zone, _accepts, take = self._drop_target()
+        zone.setProperty("hover", False)
+        self._restyle(zone)
         urls = event.mimeData().urls()
         if urls:
-            self._set_source(Path(urls[0].toLocalFile()))
+            take(Path(urls[0].toLocalFile()))
             event.acceptProposedAction()
 
     @staticmethod

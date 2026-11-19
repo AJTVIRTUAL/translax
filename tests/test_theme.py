@@ -69,7 +69,7 @@ def main() -> int:
     check("la feuille de style est lue sans erreur par Qt",
           not any("stylesheet" in w.lower() for w in warnings), f"({warnings})")
 
-    from ui.main_window import PAGE_SETTINGS, PAGE_TOOLS, PAGE_TRANSLATE, MainWindow  # noqa: E402
+    from ui.main_window import PAGE_CLEAN, PAGE_SETTINGS, PAGE_TOOLS, PAGE_TRANSLATE, MainWindow  # noqa: E402
 
     window = MainWindow()
     window.setAttribute(Qt.WA_DontShowOnScreen)
@@ -109,7 +109,10 @@ def main() -> int:
 
     print("\n3. Aucun écran ne déborde à droite, même à la largeur minimale")
     window.resize(0, 900)  # clampé par setMinimumSize
-    for index, name in ((PAGE_TRANSLATE, "Traduire"), (PAGE_TOOLS, "Outils"), (PAGE_SETTINGS, "Paramètres")):
+    for index, name in (
+        (PAGE_TRANSLATE, "Traduire"), (PAGE_TOOLS, "Outils"), (PAGE_SETTINGS, "Paramètres"),
+        (PAGE_CLEAN, "Nettoyage avancé"),
+    ):
         window._navigate_to(index)
         QTest.qWait(theme.PAGE_TRANSITION_MS + 150)
         scroll = window.pages.currentWidget()

@@ -13,8 +13,8 @@ travail — c'est le rôle du script.
 """
 from __future__ import annotations
 
-VERSION = "1.22.0"
-BUILD_DATE = "2026-11-11"  # AAAA-MM-JJ
+VERSION = "1.23.0"
+BUILD_DATE = "2026-11-19"  # AAAA-MM-JJ
 
 _MONTHS = [
     "January", "February", "March", "April", "May", "June",
